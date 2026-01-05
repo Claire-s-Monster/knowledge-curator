@@ -3,11 +3,12 @@
 Defines the webhook payload structures received from knowledge-bridge.
 """
 
+import uuid
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 class WebhookEventType(StrEnum):
@@ -19,12 +20,33 @@ class WebhookEventType(StrEnum):
 
 
 class WebhookEvent(BaseModel):
-    """Base webhook event structure."""
+    """Base webhook event structure.
 
-    event_type: WebhookEventType = Field(description="Type of webhook event")
-    payload: dict[str, Any] = Field(description="Event-specific payload data")
+    Accepts both knowledge-bridge format (type/data) and curator format (event_type/payload).
+    """
+
+    event_type: WebhookEventType = Field(
+        description="Type of webhook event",
+        validation_alias=AliasChoices("type", "event_type"),  # Accept both
+    )
+    payload: dict[str, Any] = Field(
+        description="Event-specific payload data",
+        validation_alias=AliasChoices("data", "payload"),  # Accept both
+    )
     timestamp: datetime = Field(description="Event timestamp")
-    webhook_id: str = Field(description="Unique webhook identifier")
+    webhook_id: str = Field(
+        default_factory=lambda: f"wh-{uuid.uuid4().hex[:12]}",
+        description="Unique webhook identifier (auto-generated if not provided)",
+    )
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def parse_timestamp(cls, v: Any) -> datetime:
+        """Parse timestamp from string if needed."""
+        if isinstance(v, str):
+            # Handle ISO format strings
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return v
 
 
 class StagedLearningPayload(BaseModel):

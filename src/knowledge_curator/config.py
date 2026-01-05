@@ -123,8 +123,13 @@ class Settings(BaseSettings):
     # API Configuration
     anthropic_api_key: str = Field(
         default="",
-        description="Anthropic API key",
+        description="Anthropic API key (required for LLM features)",
     )
+
+    @property
+    def has_api_key(self) -> bool:
+        """Check if API key is configured."""
+        return bool(self.anthropic_api_key and self.anthropic_api_key.strip())
 
     # Service URLs
     knowledge_bridge_url: str = Field(

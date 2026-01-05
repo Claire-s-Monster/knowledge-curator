@@ -68,8 +68,19 @@ class CuratorLLMClient:
 
         Args:
             settings: Application settings.
+
+        Raises:
+            ValueError: If Anthropic API key is not configured.
         """
         self.settings = settings
+
+        # Validate API key
+        if not settings.has_api_key:
+            raise ValueError(
+                "Anthropic API key not configured. "
+                "Set CURATOR_ANTHROPIC_API_KEY environment variable or "
+                "anthropic_api_key in config file."
+            )
 
         # Initialize Anthropic client
         self._client = Anthropic(api_key=settings.anthropic_api_key)
