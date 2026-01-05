@@ -1,0 +1,1 @@
+/home/memento/.claude/commands/2_atomic_init.md
