@@ -426,7 +426,9 @@ async def _merge_with_existing(
         },
     }
 
-    success = await context.knowledge_store_client.update_pattern(merge_with_id, updates)
+    success = await context.knowledge_store_client.update_pattern(
+        merge_with_id, updates
+    )
     if success:
         logger.info(f"Merged entry {entry.id} into {merge_with_id}")
     else:

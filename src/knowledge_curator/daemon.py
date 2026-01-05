@@ -20,6 +20,11 @@ from knowledge_curator.core.models import QueuedTask, TaskType
 from knowledge_curator.core.queue import TaskQueue
 from knowledge_curator.database.repository import Repository
 from knowledge_curator.llm.client import CuratorLLMClient
+from knowledge_curator.tasks.feedback import (
+    FeedbackContext,
+    FeedbackPayload,
+    process_feedback,
+)
 from knowledge_curator.tasks.review import (
     ReviewContext,
     ReviewPayload,
@@ -125,7 +130,21 @@ class CuratorDaemon:
         self.task_queue.register_handler(TaskType.REVIEW_STAGED, handle_review)
         logger.info("Registered handler: review_staged_entry")
 
-        # TODO Phase 5: Register process_feedback handler
+        # Phase 5: Register process_feedback handler
+        feedback_context = FeedbackContext(
+            settings=self.settings,
+            knowledge_store_client=self.knowledge_store_client,  # type: ignore[arg-type]
+            bridge_client=self.bridge_client,  # type: ignore[arg-type]
+        )
+
+        async def handle_feedback(task: QueuedTask) -> None:
+            """Handle process_feedback task."""
+            payload = FeedbackPayload(**task.payload)
+            await process_feedback(payload, feedback_context)
+
+        self.task_queue.register_handler(TaskType.PROCESS_FEEDBACK, handle_feedback)
+        logger.info("Registered handler: process_feedback")
+
         # TODO Phase 6: Register scheduled task handlers
 
         # Placeholder handlers for unimplemented tasks
@@ -138,7 +157,7 @@ class CuratorDaemon:
             )
 
         for task_type in TaskType:
-            if task_type != TaskType.REVIEW_STAGED:
+            if task_type not in (TaskType.REVIEW_STAGED, TaskType.PROCESS_FEEDBACK):
                 self.task_queue.register_handler(task_type, placeholder_handler)
 
     async def _run_queue_processor(self) -> None:

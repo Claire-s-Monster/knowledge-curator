@@ -400,8 +400,7 @@ class KnowledgeStoreClient:
             )
 
             return [
-                KnowledgeEntry(**entry_data)
-                for entry_data in result.get("entries", [])
+                KnowledgeEntry(**entry_data) for entry_data in result.get("entries", [])
             ]
 
         except Exception as e:
