@@ -20,14 +20,22 @@ from knowledge_curator.core.models import QueuedTask, TaskType
 from knowledge_curator.core.queue import TaskQueue
 from knowledge_curator.database.repository import Repository
 from knowledge_curator.llm.client import CuratorLLMClient
-from knowledge_curator.tasks.feedback import (
+from knowledge_curator.scheduler import CuratorScheduler
+from knowledge_curator.tasks import (
+    DedupContext,
+    DedupPayload,
     FeedbackContext,
     FeedbackPayload,
-    process_feedback,
-)
-from knowledge_curator.tasks.review import (
+    GapContext,
+    GapPayload,
+    ObsolescenceContext,
+    ObsolescencePayload,
     ReviewContext,
     ReviewPayload,
+    deduplicate,
+    detect_obsolescence,
+    identify_gaps,
+    process_feedback,
     review_staged_entry,
 )
 from knowledge_curator.webhooks.server import WebhookServer
@@ -41,7 +49,7 @@ class CuratorDaemon:
     - Task queue processor
     - Webhook server (FastAPI)
     - LLM client with rate limiting
-    - Future: Scheduler
+    - Scheduler for batch operations
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -57,6 +65,7 @@ class CuratorDaemon:
         self.knowledge_store_client: KnowledgeStoreClient | None = None
         self.bridge_client: KnowledgeBridgeClient | None = None
         self.webhook_server: WebhookServer | None = None
+        self.scheduler: CuratorScheduler | None = None
         self._uvicorn_server: uvicorn.Server | None = None
         self._shutdown_event = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
@@ -95,7 +104,13 @@ class CuratorDaemon:
         # Start webhook server
         self._tasks.append(asyncio.create_task(self._run_webhook_server()))
 
-        # TODO Phase 6: Start scheduler
+        # Phase 6: Start scheduler
+        if self.llm_client and self.task_queue:
+            self.scheduler = CuratorScheduler(self.task_queue, self.settings)
+            await self.scheduler.start()
+            logger.info("Scheduler started with scheduled jobs")
+        else:
+            logger.warning("Scheduler not started - LLM client or task queue unavailable")
 
         logger.info("Knowledge Curator daemon started")
         logger.info(f"  Database: {self.settings.db_path}")
@@ -103,6 +118,7 @@ class CuratorDaemon:
             f"  Webhook: http://{self.settings.webhook_host}:{self.settings.webhook_port}"
         )
         logger.info(f"  LLM: {'enabled' if self.llm_client else 'disabled'}")
+        logger.info(f"  Scheduler: {'enabled' if self.scheduler else 'disabled'}")
         logger.info(f"  Log level: {self.settings.log_level}")
 
     def _register_task_handlers(self) -> None:
@@ -112,8 +128,9 @@ class CuratorDaemon:
 
         # Build review context for handlers
         if self.llm_client is None:
-            logger.warning("LLM client not available - review handler will fail")
+            logger.warning("LLM client not available - some handlers may fail")
 
+        # Phase 4: Register review_staged_entry handler
         review_context = ReviewContext(
             settings=self.settings,
             llm_client=self.llm_client,  # type: ignore[arg-type]
@@ -121,7 +138,6 @@ class CuratorDaemon:
             bridge_client=self.bridge_client,  # type: ignore[arg-type]
         )
 
-        # Phase 4: Register review_staged_entry handler
         async def handle_review(task: QueuedTask) -> None:
             """Handle review_staged_entry task."""
             payload = ReviewPayload(**task.payload)
@@ -145,9 +161,55 @@ class CuratorDaemon:
         self.task_queue.register_handler(TaskType.PROCESS_FEEDBACK, handle_feedback)
         logger.info("Registered handler: process_feedback")
 
-        # TODO Phase 6: Register scheduled task handlers
+        # Phase 6: Register scheduled task handlers
 
-        # Placeholder handlers for unimplemented tasks
+        # Deduplication handler
+        dedup_context = DedupContext(
+            settings=self.settings,
+            llm_client=self.llm_client,  # type: ignore[arg-type]
+            knowledge_store_client=self.knowledge_store_client,  # type: ignore[arg-type]
+        )
+
+        async def handle_dedup(task: QueuedTask) -> None:
+            """Handle deduplicate task."""
+            payload = DedupPayload(**task.payload)
+            await deduplicate(payload, dedup_context)
+
+        self.task_queue.register_handler(TaskType.DEDUPLICATE, handle_dedup)
+        logger.info("Registered handler: deduplicate")
+
+        # Obsolescence detection handler
+        obsolescence_context = ObsolescenceContext(
+            settings=self.settings,
+            llm_client=self.llm_client,  # type: ignore[arg-type]
+            knowledge_store_client=self.knowledge_store_client,  # type: ignore[arg-type]
+        )
+
+        async def handle_obsolescence(task: QueuedTask) -> None:
+            """Handle detect_obsolescence task."""
+            payload = ObsolescencePayload(**task.payload)
+            await detect_obsolescence(payload, obsolescence_context)
+
+        self.task_queue.register_handler(TaskType.DETECT_OBSOLESCENCE, handle_obsolescence)
+        logger.info("Registered handler: detect_obsolescence")
+
+        # Gap analysis handler
+        gap_context = GapContext(
+            settings=self.settings,
+            llm_client=self.llm_client,  # type: ignore[arg-type]
+            knowledge_store_client=self.knowledge_store_client,  # type: ignore[arg-type]
+            bridge_client=self.bridge_client,  # type: ignore[arg-type]
+        )
+
+        async def handle_gaps(task: QueuedTask) -> None:
+            """Handle identify_gaps task."""
+            payload = GapPayload(**task.payload)
+            await identify_gaps(payload, gap_context)
+
+        self.task_queue.register_handler(TaskType.IDENTIFY_GAPS, handle_gaps)
+        logger.info("Registered handler: identify_gaps")
+
+        # Placeholder for manual review (not yet implemented)
         async def placeholder_handler(task: QueuedTask) -> None:
             logger.warning(
                 f"Placeholder handler for {task.task_type.value} - not implemented"
@@ -156,9 +218,15 @@ class CuratorDaemon:
                 f"Handler for {task.task_type.value} not implemented"
             )
 
-        for task_type in TaskType:
-            if task_type not in (TaskType.REVIEW_STAGED, TaskType.PROCESS_FEEDBACK):
-                self.task_queue.register_handler(task_type, placeholder_handler)
+        # Only MANUAL_REVIEW is unimplemented now
+        if TaskType.MANUAL_REVIEW not in [
+            TaskType.REVIEW_STAGED,
+            TaskType.PROCESS_FEEDBACK,
+            TaskType.DEDUPLICATE,
+            TaskType.DETECT_OBSOLESCENCE,
+            TaskType.IDENTIFY_GAPS,
+        ]:
+            self.task_queue.register_handler(TaskType.MANUAL_REVIEW, placeholder_handler)
 
     async def _run_queue_processor(self) -> None:
         """Run the task queue processor until shutdown."""
@@ -199,6 +267,11 @@ class CuratorDaemon:
     async def stop(self) -> None:
         """Stop the daemon gracefully."""
         logger.info("Stopping Knowledge Curator daemon...")
+
+        # Stop scheduler first
+        if self.scheduler:
+            await self.scheduler.stop()
+            logger.info("Scheduler stopped")
 
         # Signal queue to stop
         if self.task_queue:
@@ -284,6 +357,16 @@ class CuratorDaemon:
                 status["llm"] = {"error": str(e)}
         else:
             status["llm"] = {"enabled": False}
+
+        # Check scheduler (Phase 6)
+        if self.scheduler:
+            status["scheduler"] = {
+                "running": self.scheduler.is_running,
+                "next_runs": self.scheduler.get_next_run_times(),
+                "jobs": self.scheduler.get_job_info(),
+            }
+        else:
+            status["scheduler"] = {"enabled": False}
 
         return status
 
