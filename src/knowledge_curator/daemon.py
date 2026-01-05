@@ -14,11 +14,17 @@ from pathlib import Path
 import uvicorn
 from loguru import logger
 
+from knowledge_curator.clients import KnowledgeBridgeClient, KnowledgeStoreClient
 from knowledge_curator.config import Settings, get_settings
-from knowledge_curator.core.models import QueuedTask
+from knowledge_curator.core.models import QueuedTask, TaskType
 from knowledge_curator.core.queue import TaskQueue
 from knowledge_curator.database.repository import Repository
 from knowledge_curator.llm.client import CuratorLLMClient
+from knowledge_curator.tasks.review import (
+    ReviewContext,
+    ReviewPayload,
+    review_staged_entry,
+)
 from knowledge_curator.webhooks.server import WebhookServer
 
 
@@ -43,6 +49,8 @@ class CuratorDaemon:
         self.repository: Repository | None = None
         self.task_queue: TaskQueue | None = None
         self.llm_client: CuratorLLMClient | None = None
+        self.knowledge_store_client: KnowledgeStoreClient | None = None
+        self.bridge_client: KnowledgeBridgeClient | None = None
         self.webhook_server: WebhookServer | None = None
         self._uvicorn_server: uvicorn.Server | None = None
         self._shutdown_event = asyncio.Event()
@@ -65,6 +73,12 @@ class CuratorDaemon:
             )
         else:
             logger.warning("No Anthropic API key configured - LLM features disabled")
+
+        # Initialize external service clients
+        self.knowledge_store_client = KnowledgeStoreClient.from_settings(self.settings)
+        self.bridge_client = KnowledgeBridgeClient.from_settings(self.settings)
+        logger.info(f"Knowledge store client: {self.settings.knowledge_store_url}")
+        logger.info(f"Bridge client: {self.settings.knowledge_bridge_url}")
 
         # Initialize task queue
         self.task_queue = TaskQueue(self.repository, self.settings)
@@ -91,13 +105,30 @@ class CuratorDaemon:
         if self.task_queue is None:
             return
 
-        # TODO Phase 4: Register review_staged_entry handler
+        # Build review context for handlers
+        if self.llm_client is None:
+            logger.warning("LLM client not available - review handler will fail")
+
+        review_context = ReviewContext(
+            settings=self.settings,
+            llm_client=self.llm_client,  # type: ignore[arg-type]
+            knowledge_store_client=self.knowledge_store_client,  # type: ignore[arg-type]
+            bridge_client=self.bridge_client,  # type: ignore[arg-type]
+        )
+
+        # Phase 4: Register review_staged_entry handler
+        async def handle_review(task: QueuedTask) -> None:
+            """Handle review_staged_entry task."""
+            payload = ReviewPayload(**task.payload)
+            await review_staged_entry(payload, review_context)
+
+        self.task_queue.register_handler(TaskType.REVIEW_STAGED, handle_review)
+        logger.info("Registered handler: review_staged_entry")
+
         # TODO Phase 5: Register process_feedback handler
         # TODO Phase 6: Register scheduled task handlers
 
-        # For now, register placeholder handlers
-        from knowledge_curator.core.models import TaskType
-
+        # Placeholder handlers for unimplemented tasks
         async def placeholder_handler(task: QueuedTask) -> None:
             logger.warning(
                 f"Placeholder handler for {task.task_type.value} - not implemented"
@@ -107,7 +138,8 @@ class CuratorDaemon:
             )
 
         for task_type in TaskType:
-            self.task_queue.register_handler(task_type, placeholder_handler)
+            if task_type != TaskType.REVIEW_STAGED:
+                self.task_queue.register_handler(task_type, placeholder_handler)
 
     async def _run_queue_processor(self) -> None:
         """Run the task queue processor until shutdown."""
@@ -164,6 +196,13 @@ class CuratorDaemon:
         # Wait for tasks to complete
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
+
+        # Close external clients
+        if self.knowledge_store_client:
+            await self.knowledge_store_client.close()
+        if self.bridge_client:
+            await self.bridge_client.close()
+        logger.info("External clients closed")
 
         # Close database connection
         if self.repository:

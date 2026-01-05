@@ -19,8 +19,8 @@ from pydantic import BaseModel, Field
 from knowledge_curator.clients import (
     CurationDecision,
     KnowledgeBridgeClient,
+    KnowledgeStoreClient,
     StagedEntry,
-    UCKNClient,
 )
 from knowledge_curator.config import Settings
 from knowledge_curator.core.models import DecisionType, ReviewDecision
@@ -56,7 +56,7 @@ class ReviewContext:
 
     settings: Settings
     llm_client: CuratorLLMClient
-    uckn_client: UCKNClient
+    knowledge_store_client: KnowledgeStoreClient
     bridge_client: KnowledgeBridgeClient
 
 
@@ -107,9 +107,9 @@ async def review_staged_entry(
     # Step 6: Notify knowledge-bridge
     await _notify_decision(entry_id, decision, context)
 
-    # Step 7: Execute decision (promote to UCKN if needed)
+    # Step 7: Execute decision (promote to knowledge-store if needed)
     if decision.decision == DecisionType.PROMOTE:
-        await _promote_to_uckn(entry, context)
+        await _promote_to_knowledge_store(entry, context)
     elif decision.decision == DecisionType.MERGE and decision.merged_content:
         await _merge_with_existing(
             entry,
@@ -153,7 +153,7 @@ async def _search_similar(
     query = " ".join(query_parts) or str(content)[:1000]
 
     try:
-        results = await context.uckn_client.search_similar(
+        results = await context.knowledge_store_client.search_similar(
             query=query,
             limit=10,
             min_similarity=context.settings.thresholds.similarity_related,
@@ -177,7 +177,7 @@ async def _search_similar(
         ]
 
     except Exception as e:
-        logger.warning(f"UCKN search failed: {e}")
+        logger.warning(f"Knowledge store search failed: {e}")
         return []
 
 
@@ -351,18 +351,18 @@ async def _notify_decision(
         logger.warning(f"Failed to notify bridge of decision for {entry_id}")
 
 
-async def _promote_to_uckn(
+async def _promote_to_knowledge_store(
     entry: StagedEntry,
     context: ReviewContext,
 ) -> str | None:
-    """Promote entry to UCKN knowledge base.
+    """Promote entry to knowledge-store.
 
     Args:
         entry: Entry to promote.
         context: Execution context.
 
     Returns:
-        UCKN pattern ID if successful, None otherwise.
+        Pattern ID if successful, None otherwise.
     """
     content = entry.content
 
@@ -380,16 +380,16 @@ async def _promote_to_uckn(
     # Document is the full content
     document = _build_document(content)
 
-    pattern_id = await context.uckn_client.contribute_pattern(
+    pattern_id = await context.knowledge_store_client.contribute_pattern(
         document=document,
         metadata=metadata,
         project_id=content.get("project_id"),
     )
 
     if pattern_id:
-        logger.info(f"Promoted entry {entry.id} to UCKN as {pattern_id}")
+        logger.info(f"Promoted entry {entry.id} to knowledge-store as {pattern_id}")
     else:
-        logger.warning(f"Failed to promote entry {entry.id} to UCKN")
+        logger.warning(f"Failed to promote entry {entry.id} to knowledge-store")
 
     return pattern_id
 
@@ -400,7 +400,7 @@ async def _merge_with_existing(
     merged_content: dict[str, Any],
     context: ReviewContext,
 ) -> bool:
-    """Merge entry content with existing UCKN entry.
+    """Merge entry content with existing knowledge-store entry.
 
     Args:
         entry: New entry with additional content.
@@ -412,7 +412,7 @@ async def _merge_with_existing(
         True if merge succeeded.
     """
     # Get existing entry
-    existing = await context.uckn_client.get_pattern(merge_with_id)
+    existing = await context.knowledge_store_client.get_pattern(merge_with_id)
     if existing is None:
         logger.warning(f"Merge target not found: {merge_with_id}")
         return False
@@ -426,7 +426,7 @@ async def _merge_with_existing(
         },
     }
 
-    success = await context.uckn_client.update_pattern(merge_with_id, updates)
+    success = await context.knowledge_store_client.update_pattern(merge_with_id, updates)
     if success:
         logger.info(f"Merged entry {entry.id} into {merge_with_id}")
     else:

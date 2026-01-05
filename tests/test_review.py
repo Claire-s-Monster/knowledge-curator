@@ -39,11 +39,11 @@ def mock_llm_client() -> MagicMock:
 
 
 @pytest.fixture
-def mock_uckn_client() -> MagicMock:
-    """Create mock UCKN client."""
+def mock_knowledge_store_client() -> MagicMock:
+    """Create mock knowledge-store client."""
     client = MagicMock()
     client.search_similar = AsyncMock(return_value=[])
-    client.contribute_pattern = AsyncMock(return_value="uckn-123")
+    client.contribute_pattern = AsyncMock(return_value="ks-123")
     client.get_pattern = AsyncMock(return_value=None)
     client.update_pattern = AsyncMock(return_value=True)
     return client
@@ -62,14 +62,14 @@ def mock_bridge_client() -> MagicMock:
 def review_context(
     mock_settings: Settings,
     mock_llm_client: MagicMock,
-    mock_uckn_client: MagicMock,
+    mock_knowledge_store_client: MagicMock,
     mock_bridge_client: MagicMock,
 ) -> ReviewContext:
     """Create review context with mocks."""
     return ReviewContext(
         settings=mock_settings,
         llm_client=mock_llm_client,
-        uckn_client=mock_uckn_client,
+        knowledge_store_client=mock_knowledge_store_client,
         bridge_client=mock_bridge_client,
     )
 
@@ -247,7 +247,7 @@ class TestReviewStagedEntry:
         review_context.bridge_client.get_staged_entry.return_value = sample_staged_entry
 
         # Setup knowledge store to return high-similarity match
-        review_context.uckn_client.search_similar.return_value = [
+        review_context.knowledge_store_client.search_similar.return_value = [
             SearchResult(
                 entry=KnowledgeEntry(
                     id="uckn-duplicate",
@@ -279,7 +279,7 @@ class TestReviewStagedEntry:
         """Novel entry should be promoted after LLM review."""
         # Setup mocks
         review_context.bridge_client.get_staged_entry.return_value = sample_staged_entry
-        review_context.uckn_client.search_similar.return_value = []
+        review_context.knowledge_store_client.search_similar.return_value = []
 
         # LLM says promote
         review_context.llm_client.complete_json.return_value = (
@@ -310,7 +310,7 @@ class TestReviewStagedEntry:
         review_context.llm_client.complete_json.assert_called_once()
 
         # Should have promoted to UCKN
-        review_context.uckn_client.contribute_pattern.assert_called_once()
+        review_context.knowledge_store_client.contribute_pattern.assert_called_once()
 
         # Bridge should have been notified
         review_context.bridge_client.notify_decision.assert_called_once()
@@ -325,7 +325,7 @@ class TestReviewStagedEntry:
         review_context.bridge_client.get_staged_entry.return_value = sample_staged_entry
 
         # Similar entry with moderate overlap
-        review_context.uckn_client.search_similar.return_value = [
+        review_context.knowledge_store_client.search_similar.return_value = [
             SearchResult(
                 entry=KnowledgeEntry(
                     id="uckn-related",
@@ -337,7 +337,7 @@ class TestReviewStagedEntry:
         ]
 
         # Existing entry for merge
-        review_context.uckn_client.get_pattern.return_value = {
+        review_context.knowledge_store_client.get_pattern.return_value = {
             "id": "uckn-related",
             "document": "Related content",
             "metadata": {"title": "Related pattern"},
@@ -369,7 +369,7 @@ class TestReviewStagedEntry:
         assert decision.merged_content == merged_content
 
         # Should have updated existing entry
-        review_context.uckn_client.update_pattern.assert_called_once()
+        review_context.knowledge_store_client.update_pattern.assert_called_once()
 
     async def test_low_quality_entry_rejected(
         self,
@@ -379,7 +379,7 @@ class TestReviewStagedEntry:
         """Low quality entry should be rejected."""
         # Setup mocks
         review_context.bridge_client.get_staged_entry.return_value = sample_staged_entry
-        review_context.uckn_client.search_similar.return_value = []
+        review_context.knowledge_store_client.search_similar.return_value = []
 
         # LLM says reject
         review_context.llm_client.complete_json.return_value = (
@@ -407,4 +407,4 @@ class TestReviewStagedEntry:
         assert "incorrect" in decision.reason.lower()
 
         # Should NOT have promoted to UCKN
-        review_context.uckn_client.contribute_pattern.assert_not_called()
+        review_context.knowledge_store_client.contribute_pattern.assert_not_called()
