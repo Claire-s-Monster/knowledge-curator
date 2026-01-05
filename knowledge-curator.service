@@ -1,0 +1,67 @@
+# User-level systemd service for knowledge-curator
+# Install to: ~/.config/systemd/user/knowledge-curator.service
+#
+# Installation:
+#   cp knowledge-curator.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable knowledge-curator
+#   systemctl --user start knowledge-curator
+#
+# Commands:
+#   systemctl --user status knowledge-curator
+#   systemctl --user stop knowledge-curator
+#   systemctl --user restart knowledge-curator
+#   journalctl --user -u knowledge-curator -f
+
+[Unit]
+Description=Knowledge Curator Daemon (LLM-powered curation)
+Documentation=file:///home/memento/ClaudeCode/Project/knowledge-curator/development/PRD.md
+After=network.target knowledge-bridge.service knowledge-store.service
+Wants=knowledge-bridge.service knowledge-store.service
+StartLimitBurst=3
+StartLimitIntervalSec=120
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ClaudeCode/Project/knowledge-curator/development
+
+# Environment - Core
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/ClaudeCode/Project/knowledge-curator/development/src
+
+# Environment - Service URLs
+Environment=CURATOR_KNOWLEDGE_BRIDGE_URL=http://127.0.0.1:4003
+Environment=CURATOR_KNOWLEDGE_STORE_URL=http://127.0.0.1:4004
+
+# Environment - Webhook Server
+Environment=CURATOR_WEBHOOK_HOST=127.0.0.1
+Environment=CURATOR_WEBHOOK_PORT=4005
+
+# Environment - Database
+Environment=CURATOR_DB_PATH=%h/ClaudeCode/Project/knowledge-curator/development/curator.db
+
+# Environment - Logging
+Environment=CURATOR_LOG_LEVEL=INFO
+
+# Environment - Rate Limits
+Environment=CURATOR_DAILY_BUDGET_USD=10.00
+Environment=CURATOR_MAX_CONCURRENT_LLM=3
+
+# Load API key from environment file
+EnvironmentFile=-%h/ClaudeCode/.env
+
+# Use pixi to run the curator daemon
+ExecStart=%h/.conda/envs/ClaudeCode/bin/pixi run curator
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Restart configuration
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=knowledge-curator
+
+[Install]
+WantedBy=default.target
