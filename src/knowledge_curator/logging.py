@@ -48,17 +48,19 @@ def clear_task_context() -> None:
     _task_type.set(None)
 
 
-def _format_json(record: "Record") -> str:
-    """Format log record as JSON for structured logging.
+def _json_sink(message: Any) -> None:
+    """Write log record as JSON to stderr.
+
+    This is a sink function (not a format function) to avoid loguru's
+    format string processing which interprets JSON braces as placeholders.
 
     Args:
-        record: Loguru record.
-
-    Returns:
-        JSON-formatted log line.
+        message: Loguru message object with .record attribute.
     """
     import json
     from datetime import UTC, datetime
+
+    record = message.record
 
     # Build structured log entry
     log_entry: dict[str, Any] = {
@@ -92,7 +94,8 @@ def _format_json(record: "Record") -> str:
     if extra:
         log_entry["extra"] = {k: v for k, v in extra.items() if not k.startswith("_")}
 
-    return json.dumps(log_entry) + "\n"
+    sys.stderr.write(json.dumps(log_entry) + "\n")
+    sys.stderr.flush()
 
 
 # Format string for human-readable output
@@ -119,9 +122,10 @@ def configure_logging(settings: Settings) -> None:
 
     # Console handler
     if use_json:
+        # Use sink function instead of format to avoid loguru interpreting
+        # JSON braces as format placeholders (KeyError: '"timestamp"')
         logger.add(
-            sys.stderr,
-            format=_format_json,
+            _json_sink,
             level=settings.log_level,
             colorize=False,
         )
@@ -134,9 +138,10 @@ def configure_logging(settings: Settings) -> None:
         )
 
     # File handler (always JSON for parsing)
+    # Use loguru's built-in serialize=True for file handlers
     logger.add(
         "logs/curator.log",
-        format=_format_json,
+        serialize=True,
         rotation="10 MB",
         retention="7 days",
         compression="gz",
@@ -146,7 +151,7 @@ def configure_logging(settings: Settings) -> None:
     # Error file (for alerting)
     logger.add(
         "logs/curator.error.log",
-        format=_format_json,
+        serialize=True,
         rotation="10 MB",
         retention="30 days",
         compression="gz",
