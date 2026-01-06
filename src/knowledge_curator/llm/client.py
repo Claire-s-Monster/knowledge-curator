@@ -1,10 +1,10 @@
-"""Anthropic API client wrapper for Knowledge Curator.
+"""Claude Agent SDK client wrapper for Knowledge Curator.
 
 Provides a high-level interface for LLM interactions with:
-- Automatic rate limiting
-- Cost tracking
+- Claude Agent SDK integration (query function)
+- Rate limiting for internal tracking
+- Cost tracking from SDK ResultMessage
 - Model selection per task type
-- Retry handling
 - Structured output parsing
 """
 
@@ -12,8 +12,15 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from anthropic import Anthropic, APIError, RateLimitError
-from anthropic.types import MessageParam, TextBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKError,
+    ProcessError,
+    ResultMessage,
+    TextBlock,
+    query,
+)
 from loguru import logger
 
 from knowledge_curator.config import Settings
@@ -43,13 +50,13 @@ class LLMUsage:
 
 
 class CuratorLLMClient:
-    """Anthropic client wrapper with rate limiting and cost tracking.
+    """Claude Agent SDK client wrapper with rate limiting and cost tracking.
 
     Features:
     - Automatic model selection based on task type
     - Rate limiting with token bucket algorithm
     - Daily budget enforcement
-    - Cost tracking per request
+    - Cost tracking from SDK ResultMessage
     - Retry handling for transient errors
     """
 
@@ -69,23 +76,19 @@ class CuratorLLMClient:
         Args:
             settings: Application settings.
 
-        Raises:
-            ValueError: If Anthropic API key is not configured.
+        Note:
+            The Claude Agent SDK uses Claude Code CLI credentials.
+            The API key in settings is optional but logged for awareness.
         """
         self.settings = settings
 
-        # Validate API key
+        # SDK uses Claude Code CLI credentials
         if not settings.has_api_key:
-            raise ValueError(
-                "Anthropic API key not configured. "
-                "Set CURATOR_ANTHROPIC_API_KEY environment variable or "
-                "anthropic_api_key in config file."
+            logger.warning(
+                "No API key in config; SDK will use Claude Code CLI credentials"
             )
 
-        # Initialize Anthropic client
-        self._client = Anthropic(api_key=settings.anthropic_api_key)
-
-        # Initialize rate limiter
+        # Initialize rate limiter for internal tracking
         self._rate_limiter = RateLimiter(
             daily_budget_usd=settings.rate_limits.daily_budget_usd,
             max_concurrent=settings.rate_limits.max_concurrent_llm,
@@ -99,7 +102,7 @@ class CuratorLLMClient:
         }
 
         logger.info(
-            f"LLM client initialized: default={self._models['default']}, "
+            f"LLM client initialized with SDK: default={self._models['default']}, "
             f"budget=${settings.rate_limits.daily_budget_usd}/day"
         )
 
@@ -124,22 +127,23 @@ class CuratorLLMClient:
         max_tokens: int = 4096,
         temperature: float = 0.0,
     ) -> LLMResponse:
-        """Send a completion request to the API.
+        """Send a completion request using Claude Agent SDK.
 
         Args:
             prompt: User prompt.
             system: Optional system prompt.
             model: Model to use (overrides task_type selection).
             task_type: Task type for automatic model selection.
-            max_tokens: Maximum output tokens.
-            temperature: Sampling temperature (0 = deterministic).
+            max_tokens: Maximum output tokens (used for rate limit estimation).
+            temperature: Sampling temperature (not directly supported by SDK).
 
         Returns:
             LLMResponse with content and usage.
 
         Raises:
             ValueError: If budget exceeded.
-            APIError: If API request fails.
+            ClaudeSDKError: If SDK request fails.
+            ProcessError: If CLI process fails.
         """
         # Select model
         if model is None:
@@ -153,53 +157,60 @@ class CuratorLLMClient:
             raise ValueError("Daily budget exceeded")
 
         try:
-            # Build messages
-            messages: list[MessageParam] = [{"role": "user", "content": prompt}]
-
-            # Make API request
-            logger.debug(
-                f"Sending request to {model}, estimated {estimated_tokens} tokens"
-            )
-
-            response = self._client.messages.create(
+            # Build SDK options
+            options = ClaudeAgentOptions(
                 model=model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                system=system or "",
-                messages=messages,
+                system_prompt=system,
+                max_turns=1,  # Single completion
             )
 
-            # Extract usage
-            input_tokens = response.usage.input_tokens
-            output_tokens = response.usage.output_tokens
-
-            # Record usage and get cost
-            cost = await self._rate_limiter.record_usage(
-                model, input_tokens, output_tokens
+            logger.debug(
+                f"Sending SDK request to {model}, estimated {estimated_tokens} tokens"
             )
 
-            # Extract content
+            # Collect response
             content = ""
-            if response.content:
-                first_block = response.content[0]
-                if isinstance(first_block, TextBlock):
-                    content = first_block.text
+            input_tokens = 0
+            output_tokens = 0
+            cost_usd = 0.0
+            stop_reason = "unknown"
+
+            async for message in query(prompt=prompt, options=options):
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            content += block.text
+
+                elif isinstance(message, ResultMessage):
+                    cost_usd = message.total_cost_usd or 0.0
+                    stop_reason = message.subtype
+                    if message.usage:
+                        input_tokens = message.usage.get("input_tokens", 0)
+                        output_tokens = message.usage.get("output_tokens", 0)
+
+            # Record usage with rate limiter
+            await self._rate_limiter.record_usage(model, input_tokens, output_tokens)
+
+            logger.debug(
+                f"SDK response: {len(content)} chars, "
+                f"{input_tokens}+{output_tokens} tokens, ${cost_usd:.4f}"
+            )
 
             return LLMResponse(
                 content=content,
                 model=model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                cost_usd=cost,
-                stop_reason=response.stop_reason or "unknown",
+                cost_usd=cost_usd,
+                stop_reason=stop_reason,
             )
 
-        except RateLimitError as e:
-            logger.warning(f"Rate limited by API: {e}")
+        except ClaudeSDKError as e:
+            logger.error(f"SDK error: {e}")
             raise
 
-        except APIError as e:
-            logger.error(f"API error: {e}")
+        except ProcessError as e:
+            logger.error(f"Process error: {e}")
             raise
 
         finally:

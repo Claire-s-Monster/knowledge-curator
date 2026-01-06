@@ -74,6 +74,10 @@ anthropic = ">=0.42"
 # Database
 aiosqlite = ">=0.20"
 
+[tool.pixi.pypi-dependencies]
+# Claude Agent SDK (local editable install)
+claude-agent-sdk = { path = "/home/memento/ClaudeCode/Project/claude-agent-sdk-python", editable = true }
+
 [tool.pixi.feature.quality.dependencies]
 pytest = ">=8.4"
 pytest-cov = ">=4.0"
