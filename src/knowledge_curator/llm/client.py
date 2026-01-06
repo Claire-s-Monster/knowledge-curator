@@ -160,11 +160,20 @@ class CuratorLLMClient:
             # Build SDK options
             # CLI path for systemd service (not in default PATH)
             cli_path = "/home/memento/.conda/envs/ClaudeCode/bin/claude"
+
+            # Capture stderr for debugging subprocess failures
+            stderr_lines: list[str] = []
+
+            def capture_stderr(line: str) -> None:
+                stderr_lines.append(line)
+                logger.debug(f"SDK stderr: {line}")
+
             options = ClaudeAgentOptions(
                 model=model,
                 system_prompt=system,
                 max_turns=1,  # Single completion
                 cli_path=cli_path,
+                stderr=capture_stderr,
             )
 
             logger.debug(
@@ -209,11 +218,19 @@ class CuratorLLMClient:
             )
 
         except ClaudeSDKError as e:
-            logger.error(f"SDK error: {e}")
+            if stderr_lines:
+                logger.error(f"SDK error: {e}\nStderr:\n" + "\n".join(stderr_lines))
+            else:
+                logger.error(f"SDK error: {e}")
             raise
 
         except ProcessError as e:
-            logger.error(f"Process error: {e}")
+            if stderr_lines:
+                logger.error(
+                    f"Process error: {e}\nStderr:\n" + "\n".join(stderr_lines)
+                )
+            else:
+                logger.error(f"Process error: {e}")
             raise
 
         finally:
