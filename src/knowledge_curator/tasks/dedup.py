@@ -122,11 +122,13 @@ async def deduplicate(
             logger.error(f"Failed to resolve cluster: {e}")
             # Keep all entries in failed clusters
             entries_kept += len(cluster)
-            details.append({
-                "cluster_size": len(cluster),
-                "error": str(e),
-                "superseded_ids": [],
-            })
+            details.append(
+                {
+                    "cluster_size": len(cluster),
+                    "error": str(e),
+                    "superseded_ids": [],
+                }
+            )
 
     # Step 4: Apply supersession updates
     for detail in details:
@@ -218,15 +220,17 @@ async def _resolve_cluster(
         success_count = entry.get("success_count", 0)
         success_rate = success_count / times_applied if times_applied > 0 else 0
 
-        enriched_entries.append({
-            **entry,
-            "success_rate": success_rate,
-            "content": {
-                "pattern": entry.get("problem_pattern", ""),
-                "solution": entry.get("solution", ""),
-                "tags": entry.get("tags", []),
-            },
-        })
+        enriched_entries.append(
+            {
+                **entry,
+                "success_rate": success_rate,
+                "content": {
+                    "pattern": entry.get("problem_pattern", ""),
+                    "solution": entry.get("solution", ""),
+                    "tags": entry.get("tags", []),
+                },
+            }
+        )
 
     prompt = format_dedup_prompt(enriched_entries)
 

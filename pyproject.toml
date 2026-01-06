@@ -78,6 +78,9 @@ aiosqlite = ">=0.20"
 # Claude Agent SDK (local editable install)
 claude-agent-sdk = { path = "/home/memento/ClaudeCode/Project/claude-agent-sdk-python", editable = true }
 
+[tool.pixi.feature.metrics.dependencies]
+prometheus_client = ">=0.20"
+
 [tool.pixi.feature.quality.dependencies]
 pytest = ">=8.4"
 pytest-cov = ">=4.0"
@@ -94,6 +97,7 @@ rich = ">=13.0"
 default = {features = [], solve-group = "default"}
 quality = {features = ["quality"], solve-group = "quality"}
 dev = {features = ["quality", "dev"], solve-group = "dev"}
+production = {features = ["metrics"], solve-group = "production"}
 
 [tool.pixi.tasks]
 # Development

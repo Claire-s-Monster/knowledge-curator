@@ -192,3 +192,23 @@ class CostEntry(BaseModel):
     tokens_output: int = Field(description="Total output tokens")
     estimated_cost_usd: float = Field(description="Estimated cost in USD")
     task_count: int = Field(description="Number of tasks processed")
+
+
+class DeadLetterEntry(BaseModel):
+    """A failed task in the dead letter queue."""
+
+    id: str = Field(description="DLQ entry identifier")
+    original_task_id: str = Field(description="Original task identifier")
+    task_type: TaskType = Field(description="Type of curation task")
+    payload: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Original task payload",
+    )
+    error_message: str | None = Field(
+        default=None,
+        description="Final error message",
+    )
+    failed_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="When the task was moved to DLQ",
+    )

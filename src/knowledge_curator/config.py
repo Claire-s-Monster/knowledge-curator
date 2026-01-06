@@ -88,6 +88,19 @@ class RetryConfig(BaseSettings):
     )
 
 
+class ShutdownConfig(BaseSettings):
+    """Graceful shutdown configuration."""
+
+    timeout_seconds: int = Field(
+        default=30,
+        description="Maximum time to wait for graceful shutdown",
+    )
+    drain_queue: bool = Field(
+        default=False,
+        description="Wait for all pending tasks to complete (not just current)",
+    )
+
+
 class ScheduleConfig(BaseSettings):
     """Scheduled task configuration (cron expressions)."""
 
@@ -169,6 +182,7 @@ class Settings(BaseSettings):
     rate_limits: RateLimitConfig = Field(default_factory=RateLimitConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     schedules: ScheduleConfig = Field(default_factory=ScheduleConfig)
+    shutdown: ShutdownConfig = Field(default_factory=ShutdownConfig)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "Settings":

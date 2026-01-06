@@ -9,6 +9,7 @@ Orchestrates:
 
 import asyncio
 import signal
+import time
 from pathlib import Path
 
 import uvicorn
@@ -20,6 +21,8 @@ from knowledge_curator.core.models import QueuedTask, TaskType
 from knowledge_curator.core.queue import TaskQueue
 from knowledge_curator.database.repository import Repository
 from knowledge_curator.llm.client import CuratorLLMClient
+from knowledge_curator.logging import configure_logging
+from knowledge_curator.metrics import get_metrics
 from knowledge_curator.scheduler import CuratorScheduler
 from knowledge_curator.tasks import (
     DedupContext,
@@ -50,6 +53,7 @@ class CuratorDaemon:
     - Webhook server (FastAPI)
     - LLM client with rate limiting
     - Scheduler for batch operations
+    - Graceful shutdown with task completion
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -69,6 +73,8 @@ class CuratorDaemon:
         self._uvicorn_server: uvicorn.Server | None = None
         self._shutdown_event = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
+        self._is_shutting_down = False
+        self._shutdown_start_time: float | None = None
 
     async def start(self) -> None:
         """Start the daemon and all its components."""
@@ -110,7 +116,16 @@ class CuratorDaemon:
             await self.scheduler.start()
             logger.info("Scheduler started with scheduled jobs")
         else:
-            logger.warning("Scheduler not started - LLM client or task queue unavailable")
+            logger.warning(
+                "Scheduler not started - LLM client or task queue unavailable"
+            )
+
+        # Initialize metrics
+        from knowledge_curator import __version__
+
+        metrics = get_metrics()
+        metrics.set_daemon_info(__version__)
+        logger.info(f"  Metrics: {'enabled' if metrics.enabled else 'disabled'}")
 
         logger.info("Knowledge Curator daemon started")
         logger.info(f"  Database: {self.settings.db_path}")
@@ -190,7 +205,9 @@ class CuratorDaemon:
             payload = ObsolescencePayload(**task.payload)
             await detect_obsolescence(payload, obsolescence_context)
 
-        self.task_queue.register_handler(TaskType.DETECT_OBSOLESCENCE, handle_obsolescence)
+        self.task_queue.register_handler(
+            TaskType.DETECT_OBSOLESCENCE, handle_obsolescence
+        )
         logger.info("Registered handler: detect_obsolescence")
 
         # Gap analysis handler
@@ -226,7 +243,9 @@ class CuratorDaemon:
             TaskType.DETECT_OBSOLESCENCE,
             TaskType.IDENTIFY_GAPS,
         ]:
-            self.task_queue.register_handler(TaskType.MANUAL_REVIEW, placeholder_handler)
+            self.task_queue.register_handler(
+                TaskType.MANUAL_REVIEW, placeholder_handler
+            )
 
     async def _run_queue_processor(self) -> None:
         """Run the task queue processor until shutdown."""
@@ -264,45 +283,118 @@ class CuratorDaemon:
         except Exception as e:
             logger.exception(f"Webhook server error: {e}")
 
-    async def stop(self) -> None:
-        """Stop the daemon gracefully."""
-        logger.info("Stopping Knowledge Curator daemon...")
+    @property
+    def is_shutting_down(self) -> bool:
+        """Check if daemon is in shutdown state."""
+        return self._is_shutting_down
 
-        # Stop scheduler first
+    async def stop(self, force: bool = False) -> None:
+        """Stop the daemon gracefully.
+
+        Args:
+            force: If True, skip waiting for current task and force shutdown.
+        """
+        # Prevent double shutdown
+        if self._is_shutting_down:
+            logger.warning("Shutdown already in progress")
+            return
+
+        self._is_shutting_down = True
+        self._shutdown_start_time = time.monotonic()
+        timeout = self.settings.shutdown.timeout_seconds
+
+        logger.info(
+            f"Stopping Knowledge Curator daemon (timeout={timeout}s, force={force})..."
+        )
+
+        # Phase 1: Stop accepting new work
+        # Stop scheduler first (no new scheduled tasks)
         if self.scheduler:
             await self.scheduler.stop()
             logger.info("Scheduler stopped")
 
-        # Signal queue to stop
-        if self.task_queue:
-            self.task_queue.stop()
-
-        # Signal uvicorn to stop
+        # Signal webhook server to stop (no new webhooks)
         if self._uvicorn_server:
             self._uvicorn_server.should_exit = True
+            logger.info("Webhook server signaled to stop")
 
-        # Cancel background tasks
+        # Phase 2: Wait for current task to complete (unless force)
+        if self.task_queue and not force and self.task_queue.is_processing:
+            task_id = self.task_queue.current_task_id or "unknown"
+            logger.info(f"Waiting for current task {task_id[:8]}... to complete")
+
+            # Calculate remaining timeout
+            elapsed = time.monotonic() - self._shutdown_start_time
+            remaining_timeout = max(1.0, timeout - elapsed)
+
+            task_completed = await self.task_queue.wait_for_current_task(
+                timeout=remaining_timeout
+            )
+
+            if not task_completed:
+                logger.warning(
+                    f"Task {task_id[:8]}... did not complete within timeout, "
+                    "proceeding with shutdown"
+                )
+
+        # Phase 3: Signal queue processor to stop
+        if self.task_queue:
+            self.task_queue.stop()
+            logger.info("Task queue processor stopped")
+
+        # Phase 4: Cancel background tasks
         for task in self._tasks:
-            task.cancel()
+            if not task.done():
+                task.cancel()
 
-        # Wait for tasks to complete
+        # Wait for tasks to complete with remaining timeout
         if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+            elapsed = time.monotonic() - self._shutdown_start_time
+            remaining_timeout = max(1.0, timeout - elapsed)
 
-        # Close external clients
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*self._tasks, return_exceptions=True),
+                    timeout=remaining_timeout,
+                )
+                logger.info("Background tasks completed")
+            except TimeoutError:
+                logger.warning("Background tasks did not complete within timeout")
+
+        # Phase 5: Close external clients
+        close_errors: list[str] = []
+
         if self.knowledge_store_client:
-            await self.knowledge_store_client.close()
+            try:
+                await self.knowledge_store_client.close()
+            except Exception as e:
+                close_errors.append(f"knowledge_store: {e}")
+
         if self.bridge_client:
-            await self.bridge_client.close()
-        logger.info("External clients closed")
+            try:
+                await self.bridge_client.close()
+            except Exception as e:
+                close_errors.append(f"bridge: {e}")
 
-        # Close database connection
+        if close_errors:
+            logger.warning(f"Errors closing clients: {close_errors}")
+        else:
+            logger.info("External clients closed")
+
+        # Phase 6: Close database connection
         if self.repository:
-            await self.repository.close()
-            logger.info("Database connection closed")
+            try:
+                await self.repository.close()
+                logger.info("Database connection closed")
+            except Exception as e:
+                logger.error(f"Error closing database: {e}")
 
+        # Calculate shutdown duration
+        shutdown_duration = time.monotonic() - self._shutdown_start_time
         self._shutdown_event.set()
-        logger.info("Knowledge Curator daemon stopped")
+        logger.info(
+            f"Knowledge Curator daemon stopped (duration={shutdown_duration:.2f}s)"
+        )
 
     async def wait_for_shutdown(self) -> None:
         """Wait until shutdown is complete."""
@@ -314,6 +406,13 @@ class CuratorDaemon:
         Returns:
             Health status dictionary.
         """
+        # Check shutdown state first
+        if self._is_shutting_down:
+            return {
+                "status": "shutting_down",
+                "message": "Daemon is shutting down",
+            }
+
         status: dict[str, object] = {
             "status": "healthy",
             "database": "unknown",
@@ -376,14 +475,26 @@ def setup_signal_handlers(
 ) -> None:
     """Set up signal handlers for graceful shutdown.
 
+    Handles:
+    - First signal: Initiate graceful shutdown
+    - Second signal: Force immediate shutdown
+
     Args:
         daemon: Daemon instance.
         loop: Event loop.
     """
+    signal_count = {"value": 0}
 
     def signal_handler(sig: signal.Signals) -> None:
-        logger.info(f"Received signal {sig.name}, initiating shutdown...")
-        loop.create_task(daemon.stop())
+        signal_count["value"] += 1
+
+        if signal_count["value"] == 1:
+            logger.info(f"Received {sig.name}, initiating graceful shutdown...")
+            logger.info("Send signal again to force immediate shutdown")
+            loop.create_task(daemon.stop(force=False))
+        else:
+            logger.warning(f"Received {sig.name} again, forcing immediate shutdown!")
+            loop.create_task(daemon.stop(force=True))
 
     def add_handler_for_signal(target_sig: signal.Signals) -> None:
         """Add signal handler with properly captured signal."""
@@ -402,21 +513,8 @@ async def run_daemon(config_path: Path | None = None) -> None:
     # Load settings
     settings = get_settings(config_path)
 
-    # Configure logging
-    logger.remove()
-    logger.add(
-        "logs/curator.log",
-        rotation="10 MB",
-        retention="7 days",
-        level=settings.log_level,
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} | {message}",
-    )
-    logger.add(
-        lambda msg: print(msg, end=""),
-        level=settings.log_level,
-        format="{time:HH:mm:ss} | {level: <8} | {message}",
-        colorize=True,
-    )
+    # Configure structured logging
+    configure_logging(settings)
 
     # Create and start daemon
     daemon = CuratorDaemon(settings)

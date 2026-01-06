@@ -117,7 +117,9 @@ async def identify_gaps(
             recommendations=["Knowledge coverage appears comprehensive"],
         )
 
-    logger.info(f"Found {len(failed_queries)} failed queries from {total_searches} total")
+    logger.info(
+        f"Found {len(failed_queries)} failed queries from {total_searches} total"
+    )
 
     # Step 3: Get existing categories for context
     existing_categories = await _get_existing_categories(context)
@@ -218,7 +220,9 @@ def _extract_failed_queries(
             # Running average
             n = query_counts[query_lower]["count"]
             prev_avg = query_counts[query_lower]["avg_results"]
-            query_counts[query_lower]["avg_results"] = (prev_avg * (n - 1) + results_count) / n
+            query_counts[query_lower]["avg_results"] = (
+                prev_avg * (n - 1) + results_count
+            ) / n
 
     # Sort by count descending
     return sorted(

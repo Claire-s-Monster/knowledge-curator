@@ -14,6 +14,7 @@ from pathlib import Path
 import aiosqlite
 
 from knowledge_curator.core.models import (
+    DeadLetterEntry,
     QueuedTask,
     TaskPriority,
     TaskStatus,
@@ -349,6 +350,178 @@ class Repository:
         )
         row = await cursor.fetchone()
         return row["count"] if row else 0
+
+    async def get_dlq_entries(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        task_type: TaskType | None = None,
+    ) -> list[DeadLetterEntry]:
+        """Get entries from the dead letter queue.
+
+        Args:
+            limit: Maximum entries to return.
+            offset: Number of entries to skip.
+            task_type: Filter by task type (optional).
+
+        Returns:
+            List of DLQ entries.
+        """
+        if task_type:
+            cursor = await self.conn.execute(
+                """
+                SELECT * FROM dead_letter_queue
+                WHERE task_type = ?
+                ORDER BY failed_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (task_type.value, limit, offset),
+            )
+        else:
+            cursor = await self.conn.execute(
+                """
+                SELECT * FROM dead_letter_queue
+                ORDER BY failed_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
+
+        rows = await cursor.fetchall()
+        return [self._row_to_dlq_entry(row) for row in rows]
+
+    async def get_dlq_entry(self, dlq_id: str) -> DeadLetterEntry | None:
+        """Get a specific DLQ entry by ID.
+
+        Args:
+            dlq_id: DLQ entry identifier.
+
+        Returns:
+            DLQ entry if found, None otherwise.
+        """
+        cursor = await self.conn.execute(
+            "SELECT * FROM dead_letter_queue WHERE id = ?",
+            (dlq_id,),
+        )
+        row = await cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return self._row_to_dlq_entry(row)
+
+    async def retry_from_dlq(
+        self,
+        dlq_id: str,
+        priority: TaskPriority = TaskPriority.HIGH,
+    ) -> str | None:
+        """Move a DLQ entry back to the task queue for retry.
+
+        Args:
+            dlq_id: DLQ entry identifier.
+            priority: Priority for the retried task.
+
+        Returns:
+            New task ID if successful, None if entry not found.
+        """
+        import uuid
+
+        # Get the DLQ entry
+        entry = await self.get_dlq_entry(dlq_id)
+        if entry is None:
+            return None
+
+        # Create new task
+        new_task_id = str(uuid.uuid4())
+        now = datetime.now(UTC).isoformat()
+
+        await self.conn.execute(
+            """
+            INSERT INTO task_queue
+                (id, task_type, priority, payload, status, created_at, retry_count)
+            VALUES (?, ?, ?, ?, 'pending', ?, 0)
+            """,
+            (
+                new_task_id,
+                entry.task_type.value,
+                priority.value,
+                json.dumps(entry.payload),
+                now,
+            ),
+        )
+
+        # Remove from DLQ
+        await self.conn.execute(
+            "DELETE FROM dead_letter_queue WHERE id = ?",
+            (dlq_id,),
+        )
+
+        await self.conn.commit()
+        return new_task_id
+
+    async def delete_from_dlq(self, dlq_id: str) -> bool:
+        """Permanently delete an entry from the DLQ.
+
+        Args:
+            dlq_id: DLQ entry identifier.
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        cursor = await self.conn.execute(
+            "DELETE FROM dead_letter_queue WHERE id = ? RETURNING id",
+            (dlq_id,),
+        )
+        row = await cursor.fetchone()
+        await self.conn.commit()
+        return row is not None
+
+    async def clear_dlq(self, task_type: TaskType | None = None) -> int:
+        """Clear all entries from the DLQ.
+
+        Args:
+            task_type: Only clear entries of this type (optional).
+
+        Returns:
+            Number of entries deleted.
+        """
+        if task_type:
+            cursor = await self.conn.execute(
+                "DELETE FROM dead_letter_queue WHERE task_type = ?",
+                (task_type.value,),
+            )
+        else:
+            cursor = await self.conn.execute("DELETE FROM dead_letter_queue")
+
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def get_dlq_stats(self) -> dict[str, int]:
+        """Get DLQ statistics by task type.
+
+        Returns:
+            Dictionary of task_type -> count.
+        """
+        cursor = await self.conn.execute(
+            """
+            SELECT task_type, COUNT(*) as count
+            FROM dead_letter_queue
+            GROUP BY task_type
+            """
+        )
+        rows = await cursor.fetchall()
+        return {row["task_type"]: row["count"] for row in rows}
+
+    def _row_to_dlq_entry(self, row: aiosqlite.Row) -> DeadLetterEntry:
+        """Convert database row to DeadLetterEntry model."""
+        return DeadLetterEntry(
+            id=row["id"],
+            original_task_id=row["original_task_id"],
+            task_type=TaskType(row["task_type"]),
+            payload=json.loads(row["payload"]),
+            error_message=row["error_message"],
+            failed_at=datetime.fromisoformat(row["failed_at"]),
+        )
 
     # -------------------------------------------------------------------------
     # Decision Log Operations

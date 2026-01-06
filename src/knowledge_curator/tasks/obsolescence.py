@@ -43,9 +43,7 @@ class ObsolescenceContext:
 class LLMObsolescenceResponse(BaseModel):
     """Parsed response from LLM obsolescence assessment."""
 
-    decision: Literal["keep", "update", "archive"] = Field(
-        description="Action to take"
-    )
+    decision: Literal["keep", "update", "archive"] = Field(description="Action to take")
     confidence: float = Field(ge=0.0, le=1.0, description="Decision confidence")
     reason: str = Field(description="Explanation of the assessment")
     update_suggestion: str | None = Field(
@@ -128,11 +126,13 @@ async def detect_obsolescence(
 
         except Exception as e:
             logger.error(f"Failed to evaluate entry {entry.get('id')}: {e}")
-            details.append({
-                "entry_id": entry.get("id"),
-                "decision": "keep",
-                "error": str(e),
-            })
+            details.append(
+                {
+                    "entry_id": entry.get("id"),
+                    "decision": "keep",
+                    "error": str(e),
+                }
+            )
             kept += 1
 
     logger.info(

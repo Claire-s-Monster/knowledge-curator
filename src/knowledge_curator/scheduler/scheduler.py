@@ -72,7 +72,9 @@ class CuratorScheduler:
         self._register_jobs()
         self._scheduler.start()
         self._started = True
-        logger.info("Scheduler started with jobs: deduplicate, obsolescence, gap_analysis")
+        logger.info(
+            "Scheduler started with jobs: deduplicate, obsolescence, gap_analysis"
+        )
 
     def _register_jobs(self) -> None:
         """Register all scheduled jobs."""
@@ -87,7 +89,9 @@ class CuratorScheduler:
             name="Deduplicate knowledge entries",
             replace_existing=True,
         )
-        logger.info(f"Registered deduplicate job: {self.settings.schedules.deduplication}")
+        logger.info(
+            f"Registered deduplicate job: {self.settings.schedules.deduplication}"
+        )
 
         # Obsolescence detection - daily at 3 AM
         self._scheduler.add_job(
@@ -97,7 +101,9 @@ class CuratorScheduler:
             name="Detect obsolete entries",
             replace_existing=True,
         )
-        logger.info(f"Registered obsolescence job: {self.settings.schedules.obsolescence}")
+        logger.info(
+            f"Registered obsolescence job: {self.settings.schedules.obsolescence}"
+        )
 
         # Gap analysis - weekly Sunday 5 AM
         self._scheduler.add_job(
@@ -107,7 +113,9 @@ class CuratorScheduler:
             name="Identify knowledge gaps",
             replace_existing=True,
         )
-        logger.info(f"Registered gap_analysis job: {self.settings.schedules.gap_analysis}")
+        logger.info(
+            f"Registered gap_analysis job: {self.settings.schedules.gap_analysis}"
+        )
 
     async def _enqueue_dedup(self) -> None:
         """Enqueue deduplication task."""
@@ -186,9 +194,13 @@ class CuratorScheduler:
 
         jobs = []
         for job in self._scheduler.get_jobs():
-            jobs.append({
-                "id": job.id,
-                "name": job.name,
-                "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
-            })
+            jobs.append(
+                {
+                    "id": job.id,
+                    "name": job.name,
+                    "next_run": job.next_run_time.isoformat()
+                    if job.next_run_time
+                    else None,
+                }
+            )
         return jobs

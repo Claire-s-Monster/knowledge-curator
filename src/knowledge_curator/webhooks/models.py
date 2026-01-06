@@ -115,3 +115,45 @@ class HealthResponse(BaseModel):
     database: str = Field(description="Database connection status")
     queue: dict[str, Any] = Field(description="Queue statistics")
     uptime_seconds: float = Field(description="Daemon uptime in seconds")
+
+
+# DLQ Management Models
+
+
+class DLQListResponse(BaseModel):
+    """Response for listing DLQ entries."""
+
+    entries: list[dict[str, Any]] = Field(description="List of DLQ entries")
+    total: int = Field(description="Total count of DLQ entries")
+    limit: int = Field(description="Page size")
+    offset: int = Field(description="Page offset")
+
+
+class DLQRetryRequest(BaseModel):
+    """Request for retrying a DLQ entry."""
+
+    priority: str = Field(
+        default="high",
+        description="Priority for the retried task (critical, high, normal, low)",
+    )
+
+
+class DLQRetryResponse(BaseModel):
+    """Response for retrying a DLQ entry."""
+
+    status: str = Field(description="success or error")
+    new_task_id: str | None = Field(
+        default=None,
+        description="New task ID if successful",
+    )
+    error: str | None = Field(
+        default=None,
+        description="Error message if failed",
+    )
+
+
+class DLQStatsResponse(BaseModel):
+    """Response for DLQ statistics."""
+
+    total: int = Field(description="Total DLQ entries")
+    by_task_type: dict[str, int] = Field(description="Count by task type")

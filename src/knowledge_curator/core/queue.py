@@ -23,6 +23,7 @@ from knowledge_curator.core.models import (
     TaskType,
 )
 from knowledge_curator.database.repository import Repository
+from knowledge_curator.logging import clear_task_context, set_task_context
 
 # Type alias for task handlers
 TaskHandler = Callable[[QueuedTask], Coroutine[Any, Any, None]]
@@ -36,6 +37,7 @@ class TaskQueue:
     - Task processing with handlers
     - Retry and failure handling
     - Statistics and monitoring
+    - Graceful shutdown with task completion
     """
 
     def __init__(self, repository: Repository, settings: Settings) -> None:
@@ -50,6 +52,8 @@ class TaskQueue:
         self._handlers: dict[TaskType, TaskHandler] = {}
         self._running = False
         self._current_task: QueuedTask | None = None
+        self._task_completed_event = asyncio.Event()
+        self._task_completed_event.set()  # Initially no task running
 
     def register_handler(self, task_type: TaskType, handler: TaskHandler) -> None:
         """Register a handler for a task type.
@@ -106,13 +110,20 @@ class TaskQueue:
         if task is None:
             return False
 
+        # Signal that a task is being processed
+        self._task_completed_event.clear()
         self._current_task = task
+
+        # Set task context for structured logging
+        set_task_context(task_id=task.id, task_type=task.task_type.value)
 
         handler = self._handlers.get(task.task_type)
         if handler is None:
             logger.error(f"No handler for task type: {task.task_type.value}")
             await self._handle_failure(task, f"No handler for {task.task_type.value}")
             self._current_task = None
+            clear_task_context()
+            self._task_completed_event.set()
             return True
 
         # Mark as processing
@@ -129,6 +140,8 @@ class TaskQueue:
             await self._handle_failure(task, str(e))
 
         self._current_task = None
+        clear_task_context()
+        self._task_completed_event.set()
         return True
 
     async def _handle_failure(self, task: QueuedTask, error: str) -> None:
@@ -179,6 +192,52 @@ class TaskQueue:
         """Signal the queue processor to stop."""
         self._running = False
         logger.info("Task queue processor stopping...")
+
+    @property
+    def is_processing(self) -> bool:
+        """Check if a task is currently being processed.
+
+        Returns:
+            True if a task is in progress.
+        """
+        return self._current_task is not None
+
+    @property
+    def current_task_id(self) -> str | None:
+        """Get the ID of the currently processing task.
+
+        Returns:
+            Task ID or None if no task is processing.
+        """
+        return self._current_task.id if self._current_task else None
+
+    async def wait_for_current_task(self, timeout: float | None = None) -> bool:
+        """Wait for the current task to complete.
+
+        Args:
+            timeout: Maximum seconds to wait, None for infinite.
+
+        Returns:
+            True if task completed, False if timeout occurred.
+        """
+        if not self.is_processing:
+            return True
+
+        task_id = self._current_task.id if self._current_task else "unknown"
+        logger.info(f"Waiting for current task {task_id[:8]}... to complete")
+
+        try:
+            await asyncio.wait_for(
+                self._task_completed_event.wait(),
+                timeout=timeout,
+            )
+            logger.info(f"Task {task_id[:8]}... completed")
+            return True
+        except TimeoutError:
+            logger.warning(
+                f"Timeout waiting for task {task_id[:8]}... after {timeout}s"
+            )
+            return False
 
     async def get_stats(self) -> dict[str, Any]:
         """Get queue statistics.
