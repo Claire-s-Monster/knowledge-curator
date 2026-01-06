@@ -174,10 +174,12 @@ class CuratorLLMClient:
                 max_turns=1,  # Single completion
                 cli_path=cli_path,
                 stderr=capture_stderr,
+                extra_args={"debug-to-stderr": None},  # Enable verbose debug output
             )
 
             logger.debug(
-                f"Sending SDK request to {model}, estimated {estimated_tokens} tokens"
+                f"Sending SDK request to {model}, estimated {estimated_tokens} tokens, "
+                f"prompt length={len(prompt)}"
             )
 
             # Collect response
