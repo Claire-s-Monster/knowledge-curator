@@ -125,7 +125,7 @@ class KnowledgeBridgeClient:
         try:
             # Use the lean MCP interface
             response = await client.post(
-                "/mcp/execute",
+                "/mcp/execute_tool",
                 json={
                     "tool_name": "get_staging_queue",
                     "parameters": {
@@ -216,7 +216,7 @@ class KnowledgeBridgeClient:
 
         try:
             response = await client.post(
-                "/mcp/execute",
+                "/mcp/execute_tool",
                 json={
                     "tool_name": "register_webhook",
                     "parameters": {
@@ -257,7 +257,7 @@ class KnowledgeBridgeClient:
 
         try:
             response = await client.post(
-                "/mcp/execute",
+                "/mcp/execute_tool",
                 json={
                     "tool_name": "unregister_webhook",
                     "parameters": {"webhook_id": webhook_id},
