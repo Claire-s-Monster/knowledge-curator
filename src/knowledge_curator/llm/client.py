@@ -158,10 +158,13 @@ class CuratorLLMClient:
 
         try:
             # Build SDK options
+            # CLI path for systemd service (not in default PATH)
+            cli_path = "/home/memento/.conda/envs/ClaudeCode/bin/claude"
             options = ClaudeAgentOptions(
                 model=model,
                 system_prompt=system,
                 max_turns=1,  # Single completion
+                cli_path=cli_path,
             )
 
             logger.debug(
