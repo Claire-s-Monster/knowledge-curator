@@ -76,62 +76,66 @@ pixi run format
 - **UCKN**: Knowledge storage, similarity search
 - **session-intelligence**: Source of learnings
 
-## Current State (2026-01-06)
+## Current State (2026-01-07)
 
-**Phase 7 COMMITTED - SDK Integration Issue Under Investigation**
+**Phase 7 COMPLETE - SDK Integration Issue RESOLVED** ✅
 
-### Commits Made This Session
+### Recent Commits
 | Commit | Description |
 |--------|-------------|
 | `532b617e` | Phase 7 observability and polish (17 files) |
 | `0db74eb2` | fix(logging): use sink function for JSON format |
 | `ffd2f9e7` | fix(llm): capture SDK stderr for debugging |
 
-### Active Issue: review_staged_entry Tasks Failing
+### ✅ RESOLVED: SDK Credentials Issue (2026-01-07)
 
-**Symptom**: `review_staged_entry` tasks fail with exit code 1, go to DLQ (19 entries)
+**Problem**: `review_staged_entry` tasks failing with exit code 1, 400 billing error in DLQ (19 entries)
 
-**Working**: Scheduled `deduplicate` tasks complete successfully (hourly)
+**Root Cause**:
+1. **Wrong credentials**: systemd service loaded `~/ClaudeCode/.env` with different API key (low balance account)
+2. **Daemon init bug**: Skipped LLM client creation when no explicit API key set, but SDK uses CLI credentials automatically
 
-**Root Cause Analysis**:
-1. SDK works in isolation (direct Python, pixi, simulated systemd env)
-2. Dedup tasks work in daemon (no LLM call if no duplicates found)
-3. Review tasks fail - they DO make LLM calls
-4. Initial error was "credit balance too low" (400) - billing/auth issue
-5. Later errors show exit code 1 with stderr showing:
-   - 403 errors (non-critical, marketplace refresh)
-   - Git blocked by hooks (non-critical)
+**Diagnosis**:
+- Manual SDK test: ✅ Success ($0.24 charged to MAX subscription)
+- Daemon execution: ❌ Failed with "credit balance too low" error
+- Same user/UID for both (memento:1000)
+- SDK stderr showed billing error from different account
 
-**Key Finding**: The dedup tasks complete without LLM calls when no duplicates exist.
-The review_staged_entry tasks always call LLM and fail.
+**Solution Applied**:
+```bash
+# 1. Disabled .env file loading in systemd service
+File: ~/.config/systemd/user/knowledge-curator.service
+Line 52: # EnvironmentFile=-%h/ClaudeCode/.env  # DISABLED: Use Claude CLI credentials
 
-**Hypothesis**: Something in the daemon context causes LLM calls to fail, but only
-for certain task types. May be related to:
-- Prompt content/size differences
-- System prompt differences
-- Concurrent task processing interference
+# 2. Always create LLM client (SDK handles credential fallback)
+File: src/knowledge_curator/daemon.py
+Line 88-92: self.llm_client = CuratorLLMClient(self.settings)  # SDK uses CLI creds
+```
 
-### DLQ Status
-- 19 `review_staged_entry` tasks in DLQ
-- All failed with "Command failed with exit code 1"
-- Retry endpoint: `POST /dlq/{id}/retry`
+**Outcome**:
+- ✅ Tasks complete successfully (DLQ: 19→18)
+- ✅ Using MAX subscription credentials
+- ✅ First retry: $0.0177 charge, 3+139 tokens
+- ✅ LLM client now always initialized
 
-### Files Changed (uncommitted)
-| File | Changes |
-|------|---------|
-| `src/knowledge_curator/llm/client.py` | Added stderr capture, debug-to-stderr |
+**Key Learnings** (logged to session-intelligence):
+- `learn_500f3cc82d08`: systemd EnvironmentFile vars override ~/.claude/.credentials.json
+- `learn_969f837edffc`: Always instantiate SDK client wrappers - SDK handles credential fallback internally
 
-### Next Steps
-1. Compare review vs dedup task prompts/system prompts
-2. Check if dedup actually calls LLM (add logging)
-3. Test review task with simpler prompt
-4. Consider if working directory affects CLI behavior
+### Files Modified
+| File | Changes | Committed |
+|------|---------|-----------|
+| `src/knowledge_curator/llm/client.py` | Added stderr capture, debug logging | No |
+| `src/knowledge_curator/daemon.py` | Always create LLM client | No |
+| `src/knowledge_curator/tasks/review.py` | Added debug logging | No |
+| `src/knowledge_curator/tasks/dedup.py` | Added debug logging | No |
+| `~/.config/systemd/user/knowledge-curator.service` | Disabled EnvironmentFile | No |
 
 ### Service Status
 ```bash
-systemctl --user status knowledge-curator  # Running
-curl http://127.0.0.1:4005/health          # Healthy
-curl http://127.0.0.1:4005/dlq/stats       # 19 in DLQ
+systemctl --user status knowledge-curator  # ✅ Running with CLI credentials
+curl http://127.0.0.1:4005/health          # ✅ Healthy
+curl http://127.0.0.1:4005/dlq/stats       # 18 in DLQ (decreasing)
 ```
 
 ## Session Priming

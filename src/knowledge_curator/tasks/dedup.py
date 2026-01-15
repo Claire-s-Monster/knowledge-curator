@@ -234,6 +234,14 @@ async def _resolve_cluster(
 
     prompt = format_dedup_prompt(enriched_entries)
 
+    # Log prompt details before LLM call
+    logger.debug(
+        f"DEDUP_DEBUG: About to call LLM - "
+        f"prompt_length={len(prompt)}, "
+        f"system_length={len(DEDUP_SYSTEM_PROMPT)}, "
+        f"cluster_size={len(cluster)}"
+    )
+
     response_dict, usage = await context.llm_client.complete_json(
         prompt=prompt,
         system=DEDUP_SYSTEM_PROMPT,

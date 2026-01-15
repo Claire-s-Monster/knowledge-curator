@@ -247,6 +247,14 @@ async def _llm_evaluate(
         similar_entries=similar_entries,
     )
 
+    # Log prompt details before LLM call
+    logger.debug(
+        f"REVIEW_DEBUG: About to call LLM - "
+        f"prompt_length={len(prompt)}, "
+        f"system_length={len(REVIEW_SYSTEM_PROMPT)}, "
+        f"similar_entries_count={len(similar_entries)}"
+    )
+
     # Call LLM
     response_dict, usage = await context.llm_client.complete_json(
         prompt=prompt,

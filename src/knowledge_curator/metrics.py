@@ -232,7 +232,7 @@ class MetricsCollector:
         """
         if not self._enabled:
             return b"# Prometheus metrics disabled\n"
-        return generate_latest()
+        return generate_latest()  # type: ignore[no-any-return]
 
     def get_content_type(self) -> str:
         """Get content type for metrics endpoint.
@@ -242,7 +242,7 @@ class MetricsCollector:
         """
         if not self._enabled:
             return "text/plain"
-        return CONTENT_TYPE_LATEST
+        return CONTENT_TYPE_LATEST  # type: ignore[no-any-return]
 
 
 @asynccontextmanager

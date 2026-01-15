@@ -16,7 +16,7 @@ from loguru import logger
 from knowledge_curator.config import Settings
 
 if TYPE_CHECKING:
-    from loguru import Record
+    pass
 
 # Context variables for log correlation
 _task_id: ContextVar[str | None] = ContextVar("task_id", default=None)

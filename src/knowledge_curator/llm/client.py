@@ -227,12 +227,13 @@ class CuratorLLMClient:
             raise
 
         except ProcessError as e:
-            if stderr_lines:
-                logger.error(
-                    f"Process error: {e}\nStderr:\n" + "\n".join(stderr_lines)
-                )
-            else:
-                logger.error(f"Process error: {e}")
+            stderr_text = (
+                "\n".join(stderr_lines) if stderr_lines else "No stderr captured"
+            )
+            logger.error(f"Process error: {e}\nStderr:\n{stderr_text}")
+            logger.error(
+                f"TASK_DEBUG: prompt_length={len(prompt)}, system_length={len(system or '')}, model={model}"
+            )
             raise
 
         finally:

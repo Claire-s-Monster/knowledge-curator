@@ -46,7 +46,9 @@ class WebhookEvent(BaseModel):
         if isinstance(v, str):
             # Handle ISO format strings
             return datetime.fromisoformat(v.replace("Z", "+00:00"))
-        return v
+        if isinstance(v, datetime):
+            return v
+        raise ValueError(f"Invalid timestamp type: {type(v)}")
 
 
 class StagedLearningPayload(BaseModel):

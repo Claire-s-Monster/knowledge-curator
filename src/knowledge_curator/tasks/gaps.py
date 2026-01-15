@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -245,7 +245,7 @@ async def _get_existing_categories(
     """
     try:
         stats = await context.knowledge_store_client.get_stats()
-        return stats.get("pattern_types", [])
+        return cast(list[str], stats.get("pattern_types", []))
     except Exception as e:
         logger.warning(f"Failed to get existing categories: {e}")
         return []

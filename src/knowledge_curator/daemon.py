@@ -85,14 +85,11 @@ class CuratorDaemon:
         await self.repository.connect()
         logger.info(f"Connected to database: {self.settings.db_path}")
 
-        # Initialize LLM client
-        if self.settings.anthropic_api_key:
-            self.llm_client = CuratorLLMClient(self.settings)
-            logger.info(
-                f"LLM client initialized: budget=${self.settings.rate_limits.daily_budget_usd}/day"
-            )
-        else:
-            logger.warning("No Anthropic API key configured - LLM features disabled")
+        # Initialize LLM client (SDK uses Claude CLI credentials if no API key)
+        self.llm_client = CuratorLLMClient(self.settings)
+        logger.info(
+            f"LLM client initialized: budget=${self.settings.rate_limits.daily_budget_usd}/day"
+        )
 
         # Initialize external service clients
         self.knowledge_store_client = KnowledgeStoreClient.from_settings(self.settings)
