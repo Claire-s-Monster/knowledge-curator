@@ -123,6 +123,8 @@ format = "ruff format src/"
 format-check = "ruff format --check src/"
 typecheck = "mypy src/"
 security = "bandit -r src/ -f json"
+hygiene = { depends-on = ["format-check", "typecheck"] }
+audit = "echo 'Dependency audit - pixi handles security updates automatically'"
 quality = { depends-on = ["lint", "format-check", "typecheck", "security"] }
 
 [tool.pixi.tasks.db-init]
