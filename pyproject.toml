@@ -49,6 +49,10 @@ exclude_lines = [
     "raise NotImplementedError",
 ]
 
+[tool.bandit]
+exclude_dirs = ["tests", ".pixi"]
+skips = ["B101"]  # Assert used in tests
+
 # =============================================================================
 # PIXI CONFIGURATION
 # =============================================================================
@@ -89,6 +93,8 @@ pytest-asyncio = ">=1.0"
 pytest-timeout = ">=2.1"
 ruff = ">=0.5"
 mypy = ">=1.11"
+bandit = ">=1.7"
+pre-commit = ">=3.0"
 
 [tool.pixi.feature.dev.dependencies]
 ipython = ">=8.0"
@@ -116,7 +122,8 @@ lint-fix = "ruff check --fix src/"
 format = "ruff format src/"
 format-check = "ruff format --check src/"
 typecheck = "mypy src/"
-quality = { depends-on = ["lint", "format-check", "typecheck"] }
+security = "bandit -r src/ -f json"
+quality = { depends-on = ["lint", "format-check", "typecheck", "security"] }
 
 [tool.pixi.tasks.db-init]
 cmd = "python -c 'from knowledge_curator.database.repository import init_db; init_db()'"
