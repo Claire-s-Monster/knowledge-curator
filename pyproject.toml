@@ -79,8 +79,8 @@ anthropic = ">=0.42"
 # Database
 aiosqlite = ">=0.20"
 
-[tool.pixi.pypi-dependencies]
-# Claude Agent SDK (local editable install)
+[tool.pixi.feature.sdk.pypi-dependencies]
+# Claude Agent SDK (local editable install - development only, not required for CI quality checks)
 claude-agent-sdk = { path = "/home/memento/ClaudeCode/Project/claude-agent-sdk-python", editable = true }
 
 [tool.pixi.feature.metrics.dependencies]
@@ -101,9 +101,9 @@ ipython = ">=8.0"
 rich = ">=13.0"
 
 [tool.pixi.environments]
-default = {features = [], solve-group = "default"}
+default = {features = ["sdk"], solve-group = "default"}
 quality = {features = ["quality"], solve-group = "quality"}
-dev = {features = ["quality", "dev"], solve-group = "dev"}
+dev = {features = ["quality", "dev", "sdk"], solve-group = "dev"}
 production = {features = ["metrics"], solve-group = "production"}
 
 [tool.pixi.tasks]
