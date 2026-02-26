@@ -3,7 +3,7 @@ repos:
     hooks:
       - id: pixi-quality
         name: Pixi Quality Check
-        entry: bash -c 'pixi run -e quality quality'
+        entry: bash -c 'export PATH="/home/memento/.conda/envs/ClaudeCode/bin:$PATH" && pixi run -e quality quality'
         language: system
         pass_filenames: false
         always_run: true

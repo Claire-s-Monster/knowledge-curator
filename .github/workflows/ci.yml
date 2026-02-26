@@ -4,11 +4,10 @@ on:
   push:
     branches:
       - main
-      - develop
   pull_request:
     branches:
       - main
-      - develop
+      - development
 
 jobs:
   change-detection:
@@ -52,6 +51,7 @@ jobs:
         with:
           environments: quality
           cache: true
+          pixi-version: v0.50.2
 
       - name: Run quality checks (linting, formatting, type checking)
         run: pixi run -e quality lint
@@ -73,6 +73,7 @@ jobs:
         with:
           environments: quality
           cache: true
+          pixi-version: v0.50.2
 
       - name: Run security checks
         run: pixi run -e quality security

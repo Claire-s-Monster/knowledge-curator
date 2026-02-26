@@ -10,17 +10,70 @@ Provides a high-level interface for LLM interactions with:
 
 import json
 from dataclasses import dataclass
+from dataclasses import field as _field
 from typing import Any
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKError,
-    ProcessError,
-    ResultMessage,
-    TextBlock,
-    query,
-)
+try:
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeAgentOptions,
+        ClaudeSDKError,
+        ProcessError,
+        ResultMessage,
+        TextBlock,
+        query,
+    )
+
+    HAS_SDK = True
+except ImportError:
+    HAS_SDK = False
+
+    # Minimal stub classes so the module loads and isinstance() does not raise
+    # when SDK is absent.  The query function is always mocked in tests, so
+    # these stubs are used only for type-checking the mock-yielded objects.
+    # Tests import these same stubs (see tests/test_llm_client.py) so that
+    # isinstance() calls in client.complete() resolve correctly.
+
+    @dataclass
+    class TextBlock:  # type: ignore[no-redef]
+        text: str
+
+    @dataclass
+    class AssistantMessage:  # type: ignore[no-redef]
+        content: list[Any]
+        model: str
+
+    @dataclass
+    class ResultMessage:  # type: ignore[no-redef]
+        subtype: str
+        duration_ms: int
+        duration_api_ms: int
+        is_error: bool
+        num_turns: int
+        session_id: str
+        total_cost_usd: float | None = None
+        usage: dict[str, Any] = _field(default_factory=dict)
+
+    class ClaudeAgentOptions:  # type: ignore[no-redef]
+        def __init__(self, **kwargs: Any) -> None:
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    class ClaudeSDKError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class ProcessError(Exception):  # type: ignore[no-redef]
+        pass
+
+    async def query(**kwargs: Any) -> Any:  # noqa: F811
+        # Yield nothing; real call sites always mock this in tests.
+        # Raises at runtime when SDK is actually absent.
+        raise RuntimeError(
+            "claude_agent_sdk is not installed; cannot make real LLM requests"
+        )
+        yield  # pragma: no cover  # makes this an async generator
+
+
 from loguru import logger
 
 from knowledge_curator.config import Settings

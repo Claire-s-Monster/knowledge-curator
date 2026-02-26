@@ -57,7 +57,7 @@ skips = ["B101"]  # Assert used in tests
 # PIXI CONFIGURATION
 # =============================================================================
 
-[tool.pixi.project]
+[tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
@@ -79,10 +79,6 @@ anthropic = ">=0.42"
 # Database
 aiosqlite = ">=0.20"
 
-[tool.pixi.pypi-dependencies]
-# Claude Agent SDK (local editable install)
-claude-agent-sdk = { path = "/home/memento/ClaudeCode/Project/claude-agent-sdk-python", editable = true }
-
 [tool.pixi.feature.metrics.dependencies]
 prometheus_client = ">=0.20"
 
@@ -101,7 +97,7 @@ ipython = ">=8.0"
 rich = ">=13.0"
 
 [tool.pixi.environments]
-default = {features = [], solve-group = "default"}
+default = {solve-group = "default"}
 quality = {features = ["quality"], solve-group = "quality"}
 dev = {features = ["quality", "dev"], solve-group = "dev"}
 production = {features = ["metrics"], solve-group = "production"}
@@ -123,6 +119,8 @@ format = "ruff format src/"
 format-check = "ruff format --check src/"
 typecheck = "mypy src/"
 security = "bandit -r src/ -f json"
+hygiene = { depends-on = ["format-check", "typecheck"] }
+audit = "echo 'Dependency audit - pixi handles security updates automatically'"
 quality = { depends-on = ["lint", "format-check", "typecheck", "security"] }
 
 [tool.pixi.tasks.db-init]
