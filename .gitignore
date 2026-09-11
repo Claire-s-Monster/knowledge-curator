@@ -48,3 +48,13 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local agent/session tooling (not a resource for consumers of this repo)
+.claude/
+.serena/
+.mcp.json
+
+# Planning and migration docs (local only)
+PRD.md
+PRD-MIGRATION-ADDENDUM.md
+MIGRATION_TO_CLAIRE.md

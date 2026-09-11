@@ -1,1 +1,0 @@
-/home/memento/.claude/commands/quality_commit.md
