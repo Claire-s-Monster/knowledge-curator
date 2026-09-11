@@ -117,6 +117,7 @@ class HealthResponse(BaseModel):
     database: str = Field(description="Database connection status")
     queue: dict[str, Any] = Field(description="Queue statistics")
     uptime_seconds: float = Field(description="Daemon uptime in seconds")
+    sdk_available: bool = Field(description="Whether claude-agent-sdk is installed")
 
 
 # DLQ Management Models

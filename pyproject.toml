@@ -74,10 +74,15 @@ apscheduler = ">=3.10"
 loguru = ">=0.7"
 python-dotenv = ">=1.1"
 pyyaml = ">=6.0"
-anthropic = ">=0.42"
 
 # Database
 aiosqlite = ">=0.20"
+
+[tool.pixi.pypi-dependencies]
+# Claude Agent SDK: published PyPI package, NOT a local path.
+# A local path dep here previously broke CI lock validation (see 66d88f9);
+# keep this pointed at the published release so the lock stays portable.
+claude-agent-sdk = ">=0.1.18"
 
 [tool.pixi.feature.metrics.dependencies]
 prometheus_client = ">=0.20"

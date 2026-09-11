@@ -11,7 +11,14 @@ Provides a high-level interface for LLM interactions with:
 import json
 from dataclasses import dataclass
 from dataclasses import field as _field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterable, AsyncIterator
+
+    from claude_agent_sdk import ClaudeAgentOptions as _SDKClaudeAgentOptions
+    from claude_agent_sdk import Message as _SDKMessage
+    from claude_agent_sdk import Transport as _SDKTransport
 
 try:
     from claude_agent_sdk import (
@@ -65,7 +72,12 @@ except ImportError:
     class ProcessError(Exception):  # type: ignore[no-redef]
         pass
 
-    async def query(**kwargs: Any) -> Any:  # noqa: F811
+    async def query(  # noqa: F811
+        *,
+        prompt: "str | AsyncIterable[dict[str, Any]]",
+        options: "_SDKClaudeAgentOptions | None" = None,
+        transport: "_SDKTransport | None" = None,
+    ) -> "AsyncIterator[_SDKMessage]":
         # Yield nothing; real call sites always mock this in tests.
         # Raises at runtime when SDK is actually absent.
         raise RuntimeError(
@@ -211,9 +223,6 @@ class CuratorLLMClient:
 
         try:
             # Build SDK options
-            # CLI path for systemd service (not in default PATH)
-            cli_path = "/home/memento/.conda/envs/ClaudeCode/bin/claude"
-
             # Capture stderr for debugging subprocess failures
             stderr_lines: list[str] = []
 
@@ -225,7 +234,6 @@ class CuratorLLMClient:
                 model=model,
                 system_prompt=system,
                 max_turns=1,  # Single completion
-                cli_path=cli_path,
                 stderr=capture_stderr,
                 extra_args={"debug-to-stderr": None},  # Enable verbose debug output
             )
