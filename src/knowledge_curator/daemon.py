@@ -20,7 +20,7 @@ from knowledge_curator.config import Settings, get_settings
 from knowledge_curator.core.models import QueuedTask, TaskType
 from knowledge_curator.core.queue import TaskQueue
 from knowledge_curator.database.repository import Repository
-from knowledge_curator.llm.client import CuratorLLMClient
+from knowledge_curator.llm.client import HAS_SDK, CuratorLLMClient
 from knowledge_curator.logging import configure_logging
 from knowledge_curator.metrics import get_metrics
 from knowledge_curator.scheduler import CuratorScheduler
@@ -84,6 +84,18 @@ class CuratorDaemon:
         self.repository = Repository(self.settings.db_path)
         await self.repository.connect()
         logger.info(f"Connected to database: {self.settings.db_path}")
+
+        # Refuse to start if the Claude Agent SDK is not installed - the
+        # daemon's only job is LLM curation, and booting without the SDK
+        # previously hid a total outage behind a green /health endpoint.
+        if not HAS_SDK:
+            logger.critical(
+                "claude-agent-sdk is not installed - the daemon cannot "
+                "perform LLM curation, its only job. Install the "
+                "'claude-agent-sdk' package (see pyproject.toml "
+                "[tool.pixi.pypi-dependencies]) and restart."
+            )
+            raise RuntimeError("claude-agent-sdk is not installed; refusing to start")
 
         # Initialize LLM client (SDK uses Claude CLI credentials if no API key)
         self.llm_client = CuratorLLMClient(self.settings)
@@ -414,6 +426,7 @@ class CuratorDaemon:
             "status": "healthy",
             "database": "unknown",
             "queue": {},
+            "sdk_available": HAS_SDK,
         }
 
         # Check database
