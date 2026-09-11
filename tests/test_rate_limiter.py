@@ -6,6 +6,8 @@ import time
 import pytest
 
 from knowledge_curator.llm.rate_limiter import (
+    FALLBACK_MODEL_COST,
+    MODEL_COSTS,
     DailyCost,
     ModelLimits,
     RateLimiter,
@@ -139,6 +141,49 @@ class TestRateLimiter:
 
         expected = 3.0 + 1.5  # $3 input + $1.5 output
         assert cost == pytest.approx(expected)
+
+    def test_fallback_model_cost_dominates_known_costs(self) -> None:
+        """Test FALLBACK_MODEL_COST is >= every MODEL_COSTS entry, component-wise.
+
+        FALLBACK_MODEL_COST is deliberately the most expensive known tier so
+        that an unknown model over-estimates against the daily budget ceiling
+        rather than silently under-counting it. This asserts the relationship
+        (fallback >= every known cost), never the literal tuple, so the test
+        survives a price update but fails if someone reintroduces a cheap
+        default.
+        """
+        for model, (in_cost, out_cost) in MODEL_COSTS.items():
+            assert FALLBACK_MODEL_COST[0] >= in_cost, (
+                f"fallback input cost must dominate {model}'s input cost"
+            )
+            assert FALLBACK_MODEL_COST[1] >= out_cost, (
+                f"fallback output cost must dominate {model}'s output cost"
+            )
+
+    def test_estimate_cost_unknown_model_over_estimates(
+        self, limiter: RateLimiter
+    ) -> None:
+        """Test an unknown model's estimated cost is >= every known model's.
+
+        Unknown models must err toward over-estimating so the daily budget
+        ceiling can never be silently overrun. What's under test is the
+        direction of the error (unknown >= known), not its magnitude.
+        """
+        unknown_cost = limiter.estimate_cost(
+            "definitely-not-a-real-model",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+        )
+
+        for model in MODEL_COSTS:
+            known_cost = limiter.estimate_cost(
+                model,
+                input_tokens=1_000_000,
+                output_tokens=1_000_000,
+            )
+            assert unknown_cost >= known_cost, (
+                f"unknown model cost must dominate known model {model}'s cost"
+            )
 
     def test_get_daily_stats(self, limiter: RateLimiter) -> None:
         """Test daily stats retrieval."""
