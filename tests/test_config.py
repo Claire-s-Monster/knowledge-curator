@@ -21,7 +21,7 @@ class TestSettings:
         assert settings.webhook_port == 4005
         assert settings.webhook_host == "127.0.0.1"
         assert settings.log_level == "INFO"
-        assert settings.models.default == "claude-sonnet-4-20250514"
+        assert settings.models.default == "sonnet"
         assert settings.thresholds.similarity_duplicate == 0.95
         assert settings.retry.max_attempts == 3
 

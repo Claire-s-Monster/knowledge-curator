@@ -80,8 +80,12 @@ CURATOR_KNOWLEDGE_STORE_URL=http://localhost:4004
 ```yaml
 # curator-config.yaml
 models:
-  default: "claude-sonnet-4-20250514"
-  simple_tasks: "claude-3-5-haiku-20241022"
+  # Aliases resolve to the latest model in each tier. They cannot go stale the
+  # way a dated ID can -- but the name is the only thing that is stable: the
+  # model an alias points at changes over time, and so does its price.
+  default: "sonnet"
+  simple_tasks: "haiku"
+  complex_tasks: "opus"
 
 schedules:
   deduplication: "0 * * * *"

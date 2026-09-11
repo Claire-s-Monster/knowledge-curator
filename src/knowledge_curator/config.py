@@ -16,15 +16,15 @@ class ModelConfig(BaseSettings):
     """LLM model configuration."""
 
     default: str = Field(
-        default="claude-sonnet-4-20250514",
+        default="sonnet",
         description="Default model for curation tasks",
     )
     simple_tasks: str = Field(
-        default="claude-3-5-haiku-20241022",
+        default="haiku",
         description="Model for simple classification tasks",
     )
     complex_tasks: str = Field(
-        default="claude-sonnet-4-20250514",
+        default="opus",
         description="Model for complex synthesis tasks",
     )
 

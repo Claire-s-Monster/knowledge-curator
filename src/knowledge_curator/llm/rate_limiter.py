@@ -22,6 +22,31 @@ class ModelLimits:
 
 # Default rate limits per model (conservative estimates)
 DEFAULT_MODEL_LIMITS: dict[str, ModelLimits] = {
+    "sonnet": ModelLimits(
+        requests_per_minute=50,
+        tokens_per_minute=40000,
+    ),
+    "claude-sonnet-5": ModelLimits(
+        requests_per_minute=50,
+        tokens_per_minute=40000,
+    ),
+    "haiku": ModelLimits(
+        requests_per_minute=50,
+        tokens_per_minute=50000,
+    ),
+    "claude-haiku-4-5": ModelLimits(
+        requests_per_minute=50,
+        tokens_per_minute=50000,
+    ),
+    "opus": ModelLimits(
+        requests_per_minute=20,
+        tokens_per_minute=20000,
+    ),
+    "claude-opus-5": ModelLimits(
+        requests_per_minute=20,
+        tokens_per_minute=20000,
+    ),
+    # Legacy dated IDs, kept for back-compat
     "claude-sonnet-4-20250514": ModelLimits(
         requests_per_minute=50,
         tokens_per_minute=40000,
@@ -36,13 +61,37 @@ DEFAULT_MODEL_LIMITS: dict[str, ModelLimits] = {
     ),
 }
 
-# Cost per million tokens (as of 2026)
+# Anthropic first-party API rates, verified 2026-09-11. Bare aliases
+# ("sonnet"/"haiku"/"opus") resolve to the latest model in each tier, so
+# their pricing entries must be re-checked whenever a tier's underlying
+# model changes.
 MODEL_COSTS: dict[str, tuple[float, float]] = {
     # (input_cost_per_mtok, output_cost_per_mtok)
+    "opus": (5.0, 25.0),
+    "claude-opus-5": (5.0, 25.0),
+    "sonnet": (3.0, 15.0),
+    "claude-sonnet-5": (3.0, 15.0),
+    "haiku": (1.0, 5.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+    # Legacy dated IDs, kept for back-compat
     "claude-sonnet-4-20250514": (3.0, 15.0),
     "claude-3-5-haiku-20241022": (0.25, 1.25),
     "claude-opus-4-20250514": (15.0, 75.0),
 }
+
+# Component-wise most expensive known tier, derived from MODEL_COSTS rather
+# than hardcoded so it cannot fall behind as prices/entries change. An
+# unknown model therefore over-estimates rather than under-estimates, so the
+# daily budget ceiling can never be silently overrun. Trade-off, stated
+# plainly: legacy entries are retained for back-compat and include a
+# previous-generation Opus at (15.0, 75.0), so an unknown CURRENT-generation
+# model over-estimates by roughly 3x. That is deliberate -- estimate_cost's
+# warning names the unknown model, so the correct response is to add it to
+# MODEL_COSTS rather than to lower this fallback.
+FALLBACK_MODEL_COST: tuple[float, float] = (
+    max(c[0] for c in MODEL_COSTS.values()),
+    max(c[1] for c in MODEL_COSTS.values()),
+)
 
 
 @dataclass
@@ -156,6 +205,11 @@ class RateLimiter:
     def _get_request_bucket(self, model: str) -> TokenBucket:
         """Get or create request bucket for model."""
         if model not in self._request_buckets:
+            if model not in self.model_limits:
+                logger.warning(
+                    f"Unknown model '{model}' not in model_limits; "
+                    "using conservative default request/token limits"
+                )
             limits = self.model_limits.get(
                 model,
                 ModelLimits(requests_per_minute=20, tokens_per_minute=20000),
@@ -169,6 +223,11 @@ class RateLimiter:
     def _get_token_bucket(self, model: str) -> TokenBucket:
         """Get or create token bucket for model."""
         if model not in self._token_buckets:
+            if model not in self.model_limits:
+                logger.warning(
+                    f"Unknown model '{model}' not in model_limits; "
+                    "using conservative default request/token limits"
+                )
             limits = self.model_limits.get(
                 model,
                 ModelLimits(requests_per_minute=20, tokens_per_minute=20000),
@@ -197,7 +256,13 @@ class RateLimiter:
         Returns:
             Estimated cost in USD.
         """
-        costs = MODEL_COSTS.get(model, (3.0, 15.0))  # Default to Sonnet pricing
+        costs = MODEL_COSTS.get(model)
+        if costs is None:
+            logger.warning(
+                f"Unknown model '{model}' not in MODEL_COSTS; "
+                "using most-expensive-tier fallback cost estimate"
+            )
+            costs = FALLBACK_MODEL_COST
         input_cost = (input_tokens / 1_000_000) * costs[0]
         output_cost = (output_tokens / 1_000_000) * costs[1]
         return input_cost + output_cost
