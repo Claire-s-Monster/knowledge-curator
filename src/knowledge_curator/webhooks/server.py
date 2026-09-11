@@ -223,6 +223,7 @@ class WebhookServer:
             database=str(health["database"]),
             queue=queue_data if isinstance(queue_data, dict) else {},
             uptime_seconds=time.time() - self.start_time,
+            sdk_available=bool(health.get("sdk_available", False)),
         )
 
     async def _get_status(self) -> dict[str, Any]:

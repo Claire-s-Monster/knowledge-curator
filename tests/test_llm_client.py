@@ -5,7 +5,18 @@ from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+
+try:
+    from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+except ImportError:
+    # SDK not available in CI.  Import the stub classes that client.py defines
+    # so that isinstance() checks inside CuratorLLMClient.complete() resolve
+    # correctly against the same class objects used to construct mock messages.
+    from knowledge_curator.llm.client import (  # type: ignore[no-redef]
+        AssistantMessage,
+        ResultMessage,
+        TextBlock,
+    )
 
 from knowledge_curator.config import Settings, reset_settings
 from knowledge_curator.llm.client import CuratorLLMClient, LLMResponse, LLMUsage
