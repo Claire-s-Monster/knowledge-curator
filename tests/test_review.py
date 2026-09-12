@@ -10,6 +10,7 @@ import pytest
 from knowledge_curator.clients import KnowledgeEntry, SearchResult, StagedEntry
 from knowledge_curator.config import Settings
 from knowledge_curator.core.models import DecisionType
+from knowledge_curator.database.repository import Repository
 from knowledge_curator.llm.client import LLMUsage
 from knowledge_curator.tasks.review import (
     LLMReviewResponse,
@@ -408,3 +409,187 @@ class TestReviewStagedEntry:
 
         # Should NOT have promoted to UCKN
         review_context.knowledge_store_client.contribute_pattern.assert_not_called()
+
+
+class TestReviewDecisionLogPersistence:
+    """Tests for the decision-log audit write on the production review path
+    (issue #6). These exercise `review_staged_entry` end-to-end against a
+    real `Repository`, not `repository.log_decision` directly, since the
+    original bug was that production code never called the writer at all.
+    """
+
+    async def test_review_writes_decision_log_row_via_handler(
+        self,
+        sample_staged_entry: StagedEntry,
+        review_context: ReviewContext,
+        repository: Repository,
+    ) -> None:
+        """LLM-evaluated decisions must be persisted with real token counts.
+
+        Pre-fix analysis: `_log_decision` did not exist and
+        `review_staged_entry` never called `repository.log_decision`, so no
+        row would ever be written and `len(rows) == 1` would fail with 0
+        rows. Even patched in isolation, the previous `_build_decision` call
+        site did not thread `usage` through at all, so `tokens_input` /
+        `tokens_output` on the resulting decision were hardcoded to 0 --
+        this is the `== 1234` / `== 567` assertions below failing with
+        `0 == 1234` and `0 == 567`.
+        """
+        review_context.repository = repository
+        review_context.bridge_client.get_staged_entry.return_value = (
+            sample_staged_entry
+        )
+        review_context.knowledge_store_client.search_similar.return_value = []
+
+        review_context.llm_client.complete_json.return_value = (
+            {
+                "decision": "promote",
+                "confidence": 0.9,
+                "reason": "Novel and high quality",
+                "quality_score": 0.85,
+                "novelty_score": 0.95,
+                "generalizability_score": 0.8,
+            },
+            LLMUsage(
+                input_tokens=1234,
+                output_tokens=567,
+                total_tokens=1801,
+                cost_usd=0.02,
+            ),
+        )
+
+        payload = ReviewPayload(entry_id="staged-123")
+        decision = await review_staged_entry(
+            payload, review_context, task_id="task-abc"
+        )
+
+        cursor = await repository.conn.execute(
+            "SELECT task_id, entry_id, decision, confidence, reason, "
+            "tokens_input, tokens_output FROM decision_log"
+        )
+        rows = await cursor.fetchall()
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["task_id"] == "task-abc"
+        assert row["entry_id"] == decision.entry_id
+        assert row["decision"] == decision.decision.value
+        assert row["confidence"] == pytest.approx(decision.confidence)
+        assert row["reason"] == decision.reason
+        # Critical assertion: pins the original bug (hardcoded zeros).
+        assert row["tokens_input"] == 1234
+        assert row["tokens_output"] == 567
+
+    async def test_review_prefilter_path_also_writes_decision_log(
+        self,
+        sample_staged_entry: StagedEntry,
+        review_context: ReviewContext,
+        repository: Repository,
+    ) -> None:
+        """The similarity pre-filter early-return must still write an audit
+        row, with zero token counts -- which is legitimate here (no LLM call
+        happened), unlike the LLM-path bug pinned above.
+        """
+        review_context.repository = repository
+        review_context.bridge_client.get_staged_entry.return_value = (
+            sample_staged_entry
+        )
+        # similarity_duplicate default threshold is 0.95; 0.97 triggers it.
+        review_context.knowledge_store_client.search_similar.return_value = [
+            SearchResult(
+                entry=KnowledgeEntry(
+                    id="uckn-duplicate",
+                    problem_pattern="Same content",
+                    solution="Same solution",
+                ),
+                similarity_score=0.97,
+            ),
+        ]
+
+        payload = ReviewPayload(entry_id="staged-123")
+        decision = await review_staged_entry(
+            payload, review_context, task_id="task-prefilter"
+        )
+
+        assert decision.decision == DecisionType.REJECT
+        review_context.llm_client.complete_json.assert_not_called()
+
+        cursor = await repository.conn.execute(
+            "SELECT task_id, tokens_input, tokens_output FROM decision_log"
+        )
+        rows = await cursor.fetchall()
+
+        assert len(rows) == 1
+        assert rows[0]["task_id"] == "task-prefilter"
+        # Zero is correct here: the prefilter short-circuits before any LLM
+        # call, so there is no usage to record.
+        assert rows[0]["tokens_input"] == 0
+        assert rows[0]["tokens_output"] == 0
+
+    async def test_review_without_repository_still_succeeds(
+        self,
+        sample_staged_entry: StagedEntry,
+        review_context: ReviewContext,
+    ) -> None:
+        """No repository and no task_id: review must still return a
+        decision, pinning the no-op guard so the audit write can never
+        become load-bearing for the review outcome itself.
+        """
+        review_context.repository = None
+        review_context.bridge_client.get_staged_entry.return_value = (
+            sample_staged_entry
+        )
+        review_context.knowledge_store_client.search_similar.return_value = []
+        review_context.llm_client.complete_json.return_value = (
+            {
+                "decision": "promote",
+                "confidence": 0.9,
+                "reason": "Novel and high quality",
+            },
+            LLMUsage(
+                input_tokens=10, output_tokens=5, total_tokens=15, cost_usd=0.001
+            ),
+        )
+
+        payload = ReviewPayload(entry_id="staged-123")
+        decision = await review_staged_entry(payload, review_context)
+
+        assert decision.decision == DecisionType.PROMOTE
+
+    async def test_decision_log_failure_does_not_fail_review(
+        self,
+        sample_staged_entry: StagedEntry,
+        review_context: ReviewContext,
+        repository: Repository,
+    ) -> None:
+        """A repository whose log_decision raises must not propagate: the
+        curation decision has already succeeded and must not be undone by
+        an audit-write failure.
+        """
+        review_context.repository = repository
+        review_context.bridge_client.get_staged_entry.return_value = (
+            sample_staged_entry
+        )
+        review_context.knowledge_store_client.search_similar.return_value = []
+        review_context.llm_client.complete_json.return_value = (
+            {
+                "decision": "promote",
+                "confidence": 0.9,
+                "reason": "Novel and high quality",
+            },
+            LLMUsage(
+                input_tokens=10, output_tokens=5, total_tokens=15, cost_usd=0.001
+            ),
+        )
+
+        async def _raise(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("db exploded")
+
+        repository.log_decision = _raise  # type: ignore[method-assign]
+
+        payload = ReviewPayload(entry_id="staged-123")
+        decision = await review_staged_entry(
+            payload, review_context, task_id="task-fail"
+        )
+
+        assert decision.decision == DecisionType.PROMOTE

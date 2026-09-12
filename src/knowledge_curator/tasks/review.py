@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -24,8 +24,11 @@ from knowledge_curator.clients import (
 )
 from knowledge_curator.config import Settings
 from knowledge_curator.core.models import DecisionType, ReviewDecision
-from knowledge_curator.llm.client import CuratorLLMClient
+from knowledge_curator.llm.client import CuratorLLMClient, LLMUsage
 from knowledge_curator.llm.prompts import REVIEW_SYSTEM_PROMPT, format_review_prompt
+
+if TYPE_CHECKING:
+    from knowledge_curator.database.repository import Repository
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +61,13 @@ class ReviewContext:
     llm_client: CuratorLLMClient
     knowledge_store_client: KnowledgeStoreClient
     bridge_client: KnowledgeBridgeClient
+    repository: Repository | None = None
 
 
 async def review_staged_entry(
     payload: ReviewPayload,
     context: ReviewContext,
+    task_id: str | None = None,
 ) -> ReviewDecision:
     """Review a staged entry and make a curation decision.
 
@@ -72,6 +77,8 @@ async def review_staged_entry(
     Args:
         payload: Task payload with entry_id.
         context: Execution context with clients.
+        task_id: Optional queued task ID, used to persist the decision to
+            the audit decision log (no-op if not provided).
 
     Returns:
         ReviewDecision with the decision and metadata.
@@ -96,16 +103,18 @@ async def review_staged_entry(
         logger.info(f"Entry {entry_id} pre-filtered: {prefilter_result.decision}")
         # Notify bridge and return early
         await _notify_decision(entry_id, prefilter_result, context)
+        await _log_decision(task_id, prefilter_result, context)
         return prefilter_result
 
     # Step 4: LLM evaluation for novel/partial overlap cases
-    llm_response = await _llm_evaluate(entry, similar_entries, context)
+    llm_response, usage = await _llm_evaluate(entry, similar_entries, context)
 
     # Step 5: Build final decision
-    decision = _build_decision(entry, llm_response, similar_entries, context)
+    decision = _build_decision(entry, llm_response, similar_entries, context, usage)
 
     # Step 6: Notify knowledge-bridge
     await _notify_decision(entry_id, decision, context)
+    await _log_decision(task_id, decision, context)
 
     # Step 7: Execute decision (promote to knowledge-store if needed)
     if decision.decision == DecisionType.PROMOTE:
@@ -227,7 +236,7 @@ async def _llm_evaluate(
     entry: StagedEntry,
     similar_entries: list[dict[str, Any]],
     context: ReviewContext,
-) -> LLMReviewResponse:
+) -> tuple[LLMReviewResponse, LLMUsage]:
     """Use LLM to evaluate entry quality and make decision.
 
     Args:
@@ -236,7 +245,7 @@ async def _llm_evaluate(
         context: Execution context.
 
     Returns:
-        Parsed LLM response.
+        Tuple of (parsed LLM response, token usage from the LLM call).
     """
     # Format prompt
     prompt = format_review_prompt(
@@ -279,7 +288,7 @@ async def _llm_evaluate(
         f"(tokens: {usage.input_tokens}+{usage.output_tokens})"
     )
 
-    return response
+    return response, usage
 
 
 def _build_decision(
@@ -287,6 +296,7 @@ def _build_decision(
     llm_response: LLMReviewResponse,
     similar_entries: list[dict[str, Any]],
     context: ReviewContext,
+    usage: LLMUsage | None = None,
 ) -> ReviewDecision:
     """Build final ReviewDecision from LLM response.
 
@@ -295,6 +305,8 @@ def _build_decision(
         llm_response: Parsed LLM response.
         similar_entries: Similar entries found.
         context: Execution context.
+        usage: Token usage from the LLM call, if available. When absent,
+            token counts default to 0.
 
     Returns:
         ReviewDecision with all metadata.
@@ -317,8 +329,8 @@ def _build_decision(
         similar_entries=[e["id"] for e in similar_entries],
         merged_content=llm_response.merged_content,
         model_used=context.settings.models.default,
-        tokens_input=0,  # Would need to track from LLM call
-        tokens_output=0,
+        tokens_input=usage.input_tokens if usage is not None else 0,
+        tokens_output=usage.output_tokens if usage is not None else 0,
     )
 
 
@@ -357,6 +369,46 @@ async def _notify_decision(
     success = await context.bridge_client.notify_decision(curation_decision)
     if not success:
         logger.warning(f"Failed to notify bridge of decision for {entry_id}")
+
+
+async def _log_decision(
+    task_id: str | None,
+    decision: ReviewDecision,
+    context: ReviewContext,
+) -> None:
+    """Persist a curation decision to the audit decision log.
+
+    A no-op when no repository or task_id is available, so callers and
+    tests that construct a ``ReviewContext`` without a repository (or that
+    do not pass a ``task_id``) are unaffected. Failures to write the audit
+    log are logged but never raised, since the decision has already been
+    made and notified to the bridge.
+
+    Args:
+        task_id: Queued task ID the decision belongs to.
+        decision: The decision to persist.
+        context: Execution context.
+    """
+    if context.repository is None or task_id is None:
+        logger.debug(
+            f"Skipping decision log write for entry {decision.entry_id} "
+            "(no repository or task_id)"
+        )
+        return
+
+    try:
+        await context.repository.log_decision(
+            task_id=task_id,
+            entry_id=decision.entry_id,
+            decision=decision.decision.value,
+            confidence=decision.confidence,
+            reason=decision.reason,
+            model_used=decision.model_used,
+            tokens_input=decision.tokens_input,
+            tokens_output=decision.tokens_output,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to log decision for entry {decision.entry_id}: {e}")
 
 
 async def _promote_to_knowledge_store(
