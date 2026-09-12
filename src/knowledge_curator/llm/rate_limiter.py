@@ -8,8 +8,12 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from knowledge_curator.database.repository import Repository
 
 
 @dataclass
@@ -175,6 +179,7 @@ class RateLimiter:
         daily_budget_usd: float = 10.0,
         max_concurrent: int = 3,
         model_limits: dict[str, ModelLimits] | None = None,
+        repository: "Repository | None" = None,
     ) -> None:
         """Initialize rate limiter.
 
@@ -182,10 +187,13 @@ class RateLimiter:
             daily_budget_usd: Maximum daily spend in USD.
             max_concurrent: Maximum concurrent LLM requests.
             model_limits: Custom rate limits per model.
+            repository: Optional repository used to persist and restore the
+                daily spend total across daemon restarts.
         """
         self.daily_budget_usd = daily_budget_usd
         self.max_concurrent = max_concurrent
         self.model_limits = model_limits or DEFAULT_MODEL_LIMITS
+        self._repository = repository
 
         # Semaphore for concurrent request limiting
         self._semaphore = asyncio.Semaphore(max_concurrent)
@@ -244,6 +252,36 @@ class RateLimiter:
         if self._daily_cost is None or self._daily_cost.date != today:
             self._daily_cost = DailyCost(date=today)
         return self._daily_cost
+
+    async def load_daily_cost(self) -> None:
+        """Restore today's accumulated spend from the repository.
+
+        Daemon restarts previously reset the in-memory daily total to zero,
+        silently discarding the budget already spent earlier the same day.
+        This restores that total from the persisted cost log so the budget
+        ceiling in `acquire`/`is_budget_exceeded` reflects reality.
+
+        A failed restore is logged and otherwise ignored so a database
+        hiccup never prevents the daemon from starting.
+        """
+        if self._repository is None:
+            logger.debug("No repository configured; skipping daily cost restore")
+            return
+
+        try:
+            today = datetime.now(UTC).strftime("%Y-%m-%d")
+            restored_total = await self._repository.get_daily_cost(today)
+        except Exception as e:
+            logger.warning(f"Failed to restore daily cost from repository: {e}")
+            return
+
+        async with self._lock:
+            self._daily_cost = DailyCost(date=today, total_cost_usd=restored_total)
+
+        if restored_total > 0:
+            logger.info(
+                f"Restored daily cost from repository: ${restored_total:.4f} for {today}"
+            )
 
     def estimate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         """Estimate cost for a request.
@@ -346,11 +384,28 @@ class RateLimiter:
             daily.requests += 1
             daily.input_tokens += input_tokens
             daily.output_tokens += output_tokens
+            record_date = daily.date
+            daily_total = daily.total_cost_usd
 
         logger.debug(
             f"Recorded usage: model={model}, in={input_tokens}, out={output_tokens}, "
-            f"cost=${cost:.4f}, daily_total=${daily.total_cost_usd:.2f}"
+            f"cost=${cost:.4f}, daily_total=${daily_total:.2f}"
         )
+
+        # Persist this call's delta outside the lock so concurrent LLM calls
+        # do not serialise behind disk I/O. Repository.record_cost is an
+        # accumulating upsert, so only this call's delta is passed here.
+        if self._repository is not None:
+            try:
+                await self._repository.record_cost(
+                    date=record_date,
+                    model=model,
+                    tokens_input=input_tokens,
+                    tokens_output=output_tokens,
+                    estimated_cost_usd=cost,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to persist cost record: {e}")
 
         return cost
 

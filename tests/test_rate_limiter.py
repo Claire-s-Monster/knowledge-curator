@@ -2,9 +2,11 @@
 
 import asyncio
 import time
+from pathlib import Path
 
 import pytest
 
+from knowledge_curator.database.repository import Repository
 from knowledge_curator.llm.rate_limiter import (
     FALLBACK_MODEL_COST,
     MODEL_COSTS,
@@ -219,3 +221,123 @@ class TestDailyCost:
         assert cost.requests == 0
         assert cost.input_tokens == 0
         assert cost.output_tokens == 0
+
+
+class TestRateLimiterPersistence:
+    """Tests for RateLimiter <-> Repository cost persistence (issue #7).
+
+    These tests exercise the production `record_usage` / `load_daily_cost`
+    path against a real Repository, rather than asserting against the
+    repository's writer methods directly, so they actually pin the
+    daemon-restart bug: pre-fix, a freshly constructed RateLimiter always
+    started with `DailyCost(total_cost_usd=0.0)` regardless of what had
+    already been persisted.
+    """
+
+    @pytest.mark.asyncio
+    async def test_daily_cost_survives_restart(self, tmp_path: Path) -> None:
+        """Cost from one RateLimiter must be visible to a second, independent
+        RateLimiter/Repository pair pointed at the same database file.
+
+        In-memory-vs-file choice: uses a file-backed sqlite database
+        (not ':memory:') on purpose. An in-memory database only exists for
+        the lifetime of a single connection, so two independent Repository
+        objects each opening their own ':memory:' connection would see two
+        separate empty databases -- this test would pass even without the
+        fix, testing nothing. A shared file path forces the second
+        Repository's connection to actually read back what the first one
+        wrote, which is what "survives a daemon restart" means in practice.
+        """
+        db_path = tmp_path / "restart_test.db"
+
+        repo1 = Repository(db_path)
+        await repo1.connect()
+        limiter1 = RateLimiter(daily_budget_usd=10.0, repository=repo1)
+        cost = await limiter1.record_usage(
+            "claude-sonnet-4-20250514", 100_000, 10_000
+        )
+        await repo1.close()
+
+        repo2 = Repository(db_path)
+        await repo2.connect()
+        limiter2 = RateLimiter(daily_budget_usd=10.0, repository=repo2)
+        await limiter2.load_daily_cost()
+
+        # Pre-fix: limiter2._daily_cost was a freshly constructed
+        # DailyCost(total_cost_usd=0.0) because load_daily_cost() as a
+        # concept did not exist / was never called, so this would have
+        # compared 0.0 against the real accrued cost (> 0) and failed.
+        assert limiter2.get_daily_stats()["total_cost_usd"] == pytest.approx(cost)
+
+        await repo2.close()
+
+    @pytest.mark.asyncio
+    async def test_record_usage_persists_delta_not_running_total(
+        self, tmp_path: Path
+    ) -> None:
+        """Two record_usage calls must upsert as one accumulating row, not
+        double-count via a running total passed to the accumulating upsert.
+        """
+        db_path = tmp_path / "delta_test.db"
+        repo = Repository(db_path)
+        await repo.connect()
+        limiter = RateLimiter(daily_budget_usd=10.0, repository=repo)
+
+        await limiter.record_usage("claude-sonnet-4-20250514", 1000, 100)
+        await limiter.record_usage("claude-sonnet-4-20250514", 2000, 200)
+
+        cursor = await repo.conn.execute(
+            "SELECT task_count, tokens_input, tokens_output FROM cost_log"
+        )
+        rows = await cursor.fetchall()
+
+        assert len(rows) == 1
+        assert rows[0]["task_count"] == 2
+        assert rows[0]["tokens_input"] == 3000
+        assert rows[0]["tokens_output"] == 300
+
+        await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_budget_enforced_against_restored_cost(
+        self, tmp_path: Path
+    ) -> None:
+        """The daily budget ceiling must hold after a simulated restart.
+
+        This is the actual security property behind issue #7: a restarted
+        daemon that forgot today's spend would let a caller burn through
+        the budget a second time.
+        """
+        db_path = tmp_path / "budget_test.db"
+
+        repo1 = Repository(db_path)
+        await repo1.connect()
+        limiter1 = RateLimiter(daily_budget_usd=0.01, repository=repo1)
+        # Sonnet pricing ($3/$15 per MTok): 10k in + 1k out = $0.045.
+        await limiter1.record_usage("claude-sonnet-4-20250514", 10_000, 1_000)
+        await repo1.close()
+
+        repo2 = Repository(db_path)
+        await repo2.connect()
+        limiter2 = RateLimiter(daily_budget_usd=0.01, repository=repo2)
+        await limiter2.load_daily_cost()
+
+        assert limiter2.is_budget_exceeded() is True
+
+        await repo2.close()
+
+    @pytest.mark.asyncio
+    async def test_rate_limiter_without_repository_still_works(self) -> None:
+        """No repository configured: usage recording and cost loading must
+        not raise, and in-memory tracking must still function.
+        """
+        limiter = RateLimiter(daily_budget_usd=10.0)
+
+        cost = await limiter.record_usage("claude-sonnet-4-20250514", 1000, 100)
+        await limiter.load_daily_cost()
+
+        assert cost > 0
+        stats = limiter.get_daily_stats()
+        assert stats["requests"] == 1
+        assert stats["input_tokens"] == 1000
+        assert stats["output_tokens"] == 100

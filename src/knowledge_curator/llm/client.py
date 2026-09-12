@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from claude_agent_sdk import Message as _SDKMessage
     from claude_agent_sdk import Transport as _SDKTransport
 
+    from knowledge_curator.database.repository import Repository
+
 try:
     from claude_agent_sdk import (
         AssistantMessage,
@@ -135,11 +137,15 @@ class CuratorLLMClient:
         "merge": "default",
     }
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, repository: "Repository | None" = None
+    ) -> None:
         """Initialize LLM client.
 
         Args:
             settings: Application settings.
+            repository: Optional repository used by the rate limiter to
+                persist and restore the daily spend total across restarts.
 
         Note:
             The Claude Agent SDK uses Claude Code CLI credentials.
@@ -157,6 +163,7 @@ class CuratorLLMClient:
         self._rate_limiter = RateLimiter(
             daily_budget_usd=settings.rate_limits.daily_budget_usd,
             max_concurrent=settings.rate_limits.max_concurrent_llm,
+            repository=repository,
         )
 
         # Model aliases
@@ -363,6 +370,14 @@ class CuratorLLMClient:
         )
 
         return parsed, usage
+
+    async def load_daily_cost(self) -> None:
+        """Restore today's accumulated spend from the repository.
+
+        Delegates to the underlying rate limiter so callers do not need to
+        reach into a private attribute.
+        """
+        await self._rate_limiter.load_daily_cost()
 
     def get_usage_stats(self) -> dict[str, object]:
         """Get current usage statistics.

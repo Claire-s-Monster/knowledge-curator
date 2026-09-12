@@ -98,7 +98,8 @@ class CuratorDaemon:
             raise RuntimeError("claude-agent-sdk is not installed; refusing to start")
 
         # Initialize LLM client (SDK uses Claude CLI credentials if no API key)
-        self.llm_client = CuratorLLMClient(self.settings)
+        self.llm_client = CuratorLLMClient(self.settings, repository=self.repository)
+        await self.llm_client.load_daily_cost()
         logger.info(
             f"LLM client initialized: budget=${self.settings.rate_limits.daily_budget_usd}/day"
         )
@@ -160,12 +161,13 @@ class CuratorDaemon:
             llm_client=self.llm_client,  # type: ignore[arg-type]
             knowledge_store_client=self.knowledge_store_client,  # type: ignore[arg-type]
             bridge_client=self.bridge_client,  # type: ignore[arg-type]
+            repository=self.repository,
         )
 
         async def handle_review(task: QueuedTask) -> None:
             """Handle review_staged_entry task."""
             payload = ReviewPayload(**task.payload)
-            await review_staged_entry(payload, review_context)
+            await review_staged_entry(payload, review_context, task_id=task.id)
 
         self.task_queue.register_handler(TaskType.REVIEW_STAGED, handle_review)
         logger.info("Registered handler: review_staged_entry")
