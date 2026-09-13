@@ -365,30 +365,47 @@ class RateLimiter:
         model: str,
         input_tokens: int,
         output_tokens: int,
+        actual_cost_usd: float | None = None,
+        cache_creation_tokens: int = 0,
+        cache_read_tokens: int = 0,
     ) -> float:
         """Record API usage and return cost.
 
         Args:
             model: Model used.
-            input_tokens: Actual input tokens.
+            input_tokens: Actual UNCACHED input tokens (per the Claude API,
+                this field alone does not include cache creation/read tokens).
             output_tokens: Actual output tokens.
+            actual_cost_usd: The SDK-reported authoritative cost for this
+                request, when available. Preferred over the estimate because
+                it correctly bills cached tokens; when omitted, falls back to
+                `estimate_cost()` computed from billed input tokens.
+            cache_creation_tokens: Tokens billed for writing to the prompt
+                cache.
+            cache_read_tokens: Tokens billed for reading from the prompt
+                cache.
 
         Returns:
             Cost in USD.
         """
-        cost = self.estimate_cost(model, input_tokens, output_tokens)
+        billed_input = input_tokens + cache_creation_tokens + cache_read_tokens
+        cost = (
+            actual_cost_usd
+            if actual_cost_usd is not None
+            else self.estimate_cost(model, billed_input, output_tokens)
+        )
 
         async with self._lock:
             daily = self._get_daily_cost()
             daily.total_cost_usd += cost
             daily.requests += 1
-            daily.input_tokens += input_tokens
+            daily.input_tokens += billed_input
             daily.output_tokens += output_tokens
             record_date = daily.date
             daily_total = daily.total_cost_usd
 
         logger.debug(
-            f"Recorded usage: model={model}, in={input_tokens}, out={output_tokens}, "
+            f"Recorded usage: model={model}, in={billed_input}, out={output_tokens}, "
             f"cost=${cost:.4f}, daily_total=${daily_total:.2f}"
         )
 
@@ -400,7 +417,7 @@ class RateLimiter:
                 await self._repository.record_cost(
                     date=record_date,
                     model=model,
-                    tokens_input=input_tokens,
+                    tokens_input=billed_input,
                     tokens_output=output_tokens,
                     estimated_cost_usd=cost,
                 )

@@ -341,3 +341,100 @@ class TestRateLimiterPersistence:
         assert stats["requests"] == 1
         assert stats["input_tokens"] == 1000
         assert stats["output_tokens"] == 100
+
+    @pytest.mark.asyncio
+    async def test_record_usage_with_actual_cost_persists_actual_not_estimate(
+        self, tmp_path: Path
+    ) -> None:
+        """An SDK-reported `actual_cost_usd` must be persisted verbatim to
+        cost_log, NOT recomputed via `estimate_cost()`.
+
+        Regression guard for the undercounting bug: a real production charge
+        of $0.0177 for 2 input + 259 output tokens on sonnet previously
+        recorded a naive-recomputation estimate instead (~8.5x low). This
+        test asserts the persisted value differs from the estimate for the
+        same tokens, so it fails if someone reinstates the recomputation.
+        """
+        db_path = tmp_path / "actual_cost_test.db"
+        repo = Repository(db_path)
+        await repo.connect()
+        limiter = RateLimiter(daily_budget_usd=10.0, repository=repo)
+
+        actual_cost = 0.0177
+        naive_estimate = limiter.estimate_cost("sonnet", 2, 259)
+        assert actual_cost != pytest.approx(naive_estimate)
+
+        cost = await limiter.record_usage(
+            "sonnet", 2, 259, actual_cost_usd=actual_cost
+        )
+        assert cost == actual_cost
+
+        cursor = await repo.conn.execute(
+            "SELECT estimated_cost_usd FROM cost_log"
+        )
+        rows = await cursor.fetchall()
+
+        assert len(rows) == 1
+        assert rows[0]["estimated_cost_usd"] == pytest.approx(actual_cost)
+        assert rows[0]["estimated_cost_usd"] != pytest.approx(naive_estimate)
+
+        await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_record_usage_without_actual_cost_falls_back_to_estimate(
+        self, tmp_path: Path
+    ) -> None:
+        """Back-compat guard: omitting `actual_cost_usd` must still fall
+        back to `estimate_cost()`, computed from billed input tokens.
+        """
+        db_path = tmp_path / "fallback_cost_test.db"
+        repo = Repository(db_path)
+        await repo.connect()
+        limiter = RateLimiter(daily_budget_usd=10.0, repository=repo)
+
+        expected_estimate = limiter.estimate_cost("sonnet", 1000, 100)
+        cost = await limiter.record_usage("sonnet", 1000, 100)
+
+        assert cost == pytest.approx(expected_estimate)
+
+        cursor = await repo.conn.execute(
+            "SELECT estimated_cost_usd FROM cost_log"
+        )
+        rows = await cursor.fetchall()
+        assert rows[0]["estimated_cost_usd"] == pytest.approx(expected_estimate)
+
+        await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_record_usage_with_cache_tokens_records_billed_input(
+        self, tmp_path: Path
+    ) -> None:
+        """Cache creation/read tokens must be added into
+        cost_log.tokens_input (billed input), not dropped.
+        """
+        db_path = tmp_path / "cache_tokens_test.db"
+        repo = Repository(db_path)
+        await repo.connect()
+        limiter = RateLimiter(daily_budget_usd=10.0, repository=repo)
+
+        await limiter.record_usage(
+            "sonnet",
+            2,
+            259,
+            actual_cost_usd=0.0177,
+            cache_creation_tokens=500,
+            cache_read_tokens=1000,
+        )
+
+        cursor = await repo.conn.execute(
+            "SELECT tokens_input FROM cost_log"
+        )
+        rows = await cursor.fetchall()
+
+        assert len(rows) == 1
+        assert rows[0]["tokens_input"] == 1502  # 2 + 500 + 1000
+
+        stats = limiter.get_daily_stats()
+        assert stats["input_tokens"] == 1502
+
+        await repo.close()
