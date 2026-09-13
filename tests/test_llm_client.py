@@ -332,3 +332,31 @@ class TestLLMClientUsageStats:
         client = CuratorLLMClient(settings)
 
         assert client.is_budget_exceeded() is False
+
+
+class TestLLMUsageBilledInputTokens:
+    """Tests for LLMUsage.billed_input_tokens (issue: cache tokens dropped)."""
+
+    def test_billed_input_tokens_sums_all_three_fields(self) -> None:
+        """billed_input_tokens must sum input, cache creation, and cache read."""
+        usage = LLMUsage(
+            input_tokens=2,
+            output_tokens=259,
+            total_tokens=261,
+            cost_usd=0.0177,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=1000,
+        )
+
+        assert usage.billed_input_tokens == 1502
+
+    def test_billed_input_tokens_defaults_to_input_tokens_alone(self) -> None:
+        """With cache fields unset, billed_input_tokens equals input_tokens."""
+        usage = LLMUsage(
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
+            cost_usd=0.001,
+        )
+
+        assert usage.billed_input_tokens == 100

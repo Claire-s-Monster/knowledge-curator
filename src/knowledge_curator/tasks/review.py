@@ -329,7 +329,7 @@ def _build_decision(
         similar_entries=[e["id"] for e in similar_entries],
         merged_content=llm_response.merged_content,
         model_used=context.settings.models.default,
-        tokens_input=usage.input_tokens if usage is not None else 0,
+        tokens_input=usage.billed_input_tokens if usage is not None else 0,
         tokens_output=usage.output_tokens if usage is not None else 0,
     )
 

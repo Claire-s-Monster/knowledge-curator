@@ -104,6 +104,8 @@ class LLMResponse:
     output_tokens: int
     cost_usd: float
     stop_reason: str
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 @dataclass
@@ -114,6 +116,20 @@ class LLMUsage:
     output_tokens: int
     total_tokens: int
     cost_usd: float
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+    @property
+    def billed_input_tokens(self) -> int:
+        """Total input tokens actually billed, including cache creation and cache reads.
+
+        `input_tokens` from the API counts UNCACHED tokens only.
+        """
+        return (
+            self.input_tokens
+            + self.cache_creation_input_tokens
+            + self.cache_read_input_tokens
+        )
 
 
 class CuratorLLMClient:
@@ -254,6 +270,8 @@ class CuratorLLMClient:
             content = ""
             input_tokens = 0
             output_tokens = 0
+            cache_creation_tokens = 0
+            cache_read_tokens = 0
             cost_usd = 0.0
             stop_reason = "unknown"
 
@@ -269,13 +287,34 @@ class CuratorLLMClient:
                     if message.usage:
                         input_tokens = message.usage.get("input_tokens", 0)
                         output_tokens = message.usage.get("output_tokens", 0)
+                        cache_creation_tokens = (
+                            message.usage.get("cache_creation_input_tokens", 0) or 0
+                        )
+                        cache_read_tokens = (
+                            message.usage.get("cache_read_input_tokens", 0) or 0
+                        )
 
-            # Record usage with rate limiter
-            await self._rate_limiter.record_usage(model, input_tokens, output_tokens)
+            # Record usage with rate limiter. `cost_usd` is the SDK-reported
+            # authoritative figure (includes cache billing); pass it through
+            # instead of letting the rate limiter recompute a naive estimate
+            # from token counts that undercount cached tokens.
+            await self._rate_limiter.record_usage(
+                model,
+                input_tokens,
+                output_tokens,
+                actual_cost_usd=cost_usd,
+                cache_creation_tokens=cache_creation_tokens,
+                cache_read_tokens=cache_read_tokens,
+            )
 
+            billed_input_tokens = (
+                input_tokens + cache_creation_tokens + cache_read_tokens
+            )
             logger.debug(
                 f"SDK response: {len(content)} chars, "
-                f"{input_tokens}+{output_tokens} tokens, ${cost_usd:.4f}"
+                f"billed_input={billed_input_tokens} (uncached={input_tokens}, "
+                f"cache_creation={cache_creation_tokens}, cache_read={cache_read_tokens}) "
+                f"+{output_tokens} output tokens, actual_cost=${cost_usd:.4f}"
             )
 
             return LLMResponse(
@@ -285,6 +324,8 @@ class CuratorLLMClient:
                 output_tokens=output_tokens,
                 cost_usd=cost_usd,
                 stop_reason=stop_reason,
+                cache_creation_input_tokens=cache_creation_tokens,
+                cache_read_input_tokens=cache_read_tokens,
             )
 
         except ClaudeSDKError as e:
@@ -367,6 +408,8 @@ class CuratorLLMClient:
             output_tokens=response.output_tokens,
             total_tokens=response.input_tokens + response.output_tokens,
             cost_usd=response.cost_usd,
+            cache_creation_input_tokens=response.cache_creation_input_tokens,
+            cache_read_input_tokens=response.cache_read_input_tokens,
         )
 
         return parsed, usage

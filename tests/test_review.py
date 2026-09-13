@@ -480,6 +480,58 @@ class TestReviewDecisionLogPersistence:
         assert row["tokens_input"] == 1234
         assert row["tokens_output"] == 567
 
+    async def test_review_decision_log_reflects_billed_input_with_cache_tokens(
+        self,
+        sample_staged_entry: StagedEntry,
+        review_context: ReviewContext,
+        repository: Repository,
+    ) -> None:
+        """decision_log.tokens_input must include cache creation/read tokens,
+        not just the uncached `input_tokens` figure.
+
+        The Claude Agent SDK's harness caches system prompt and tools
+        heavily, so `input_tokens` alone collapses to single digits while
+        the real billed input is much larger. This pins that the review
+        handler reads `usage.billed_input_tokens`, not `usage.input_tokens`.
+        """
+        review_context.repository = repository
+        review_context.bridge_client.get_staged_entry.return_value = (
+            sample_staged_entry
+        )
+        review_context.knowledge_store_client.search_similar.return_value = []
+
+        review_context.llm_client.complete_json.return_value = (
+            {
+                "decision": "promote",
+                "confidence": 0.9,
+                "reason": "Novel and high quality",
+                "quality_score": 0.85,
+                "novelty_score": 0.95,
+                "generalizability_score": 0.8,
+            },
+            LLMUsage(
+                input_tokens=2,
+                output_tokens=259,
+                total_tokens=261,
+                cost_usd=0.0177,
+                cache_creation_input_tokens=500,
+                cache_read_input_tokens=1000,
+            ),
+        )
+
+        payload = ReviewPayload(entry_id="staged-123")
+        await review_staged_entry(payload, review_context, task_id="task-cache")
+
+        cursor = await repository.conn.execute(
+            "SELECT tokens_input, tokens_output FROM decision_log"
+        )
+        rows = await cursor.fetchall()
+
+        assert len(rows) == 1
+        # 2 (uncached) + 500 (cache creation) + 1000 (cache read) = 1502.
+        assert rows[0]["tokens_input"] == 1502
+        assert rows[0]["tokens_output"] == 259
+
     async def test_review_prefilter_path_also_writes_decision_log(
         self,
         sample_staged_entry: StagedEntry,
